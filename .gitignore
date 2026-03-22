@@ -1,27 +1,51 @@
-# Node modules
-web/node_modules/
+# ── Secrets & credentials ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
 
-# Python
+# ── Runtime state (auto-generated, changes constantly) ────────────────────────
+state.json
+history.json
+
+# ── Config (contains your board IDs and subdomain — keep private) ─────────────
+config.json
+config.json.bak
+
+# ── Private reports / internal docs ───────────────────────────────────────────
+security/
+
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
 
-# Logs
+# ── Next.js / Node ────────────────────────────────────────────────────────────
+web/node_modules/
+web/.next/
+web/out/
+web/.turbopack/
+web/tsconfig.tsbuildinfo
+web/npm-debug.log*
+web/yarn-debug.log*
+web/yarn-error.log*
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
+logs/
 
-# Environment / secrets
-.env
-*.env
-
-# Sensitive / runtime data
-config.json
-config.json.bak
-state.json
-history.json
-security/
-
-# macOS
+# ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
+**/.DS_Store
 
-# Claude Code internals
-.claude/
+# ── Claude Code (personal AI session data) ────────────────────────────────────
+# Keep launch.json (dev server config) but ignore everything else
+.claude/*
+!.claude/launch.json
