@@ -1,0 +1,27 @@
+# Node modules
+web/node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Environment / secrets
+.env
+*.env
+
+# Sensitive / runtime data
+config.json
+config.json.bak
+state.json
+history.json
+security/
+
+# macOS
+.DS_Store
+
+# Claude Code internals
+.claude/

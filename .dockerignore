@@ -1,0 +1,21 @@
+# Dependencies (will be installed fresh inside the container)
+web/node_modules
+web/.next
+__pycache__
+
+# Secrets (passed at runtime via --env-file)
+.env
+
+# Version control
+.git
+.gitignore
+
+# IDE / OS files
+.DS_Store
+.claude
+.gemini
+*.pem
+
+# Logs
+cron.log
+web/npm-debug.log*
