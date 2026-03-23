@@ -27,6 +27,7 @@ export interface AmbiguousTask {
   department: string;
   status?: string;
   isApproved?: boolean;
+  isNew?: boolean;
   createdAt?: string;
   columnValues: {
     product?: string;

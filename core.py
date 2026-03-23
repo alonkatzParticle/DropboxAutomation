@@ -6,7 +6,7 @@ Implements the main automation workflows:
 - Manual: Process a single task by URL
 - Backfill: Process ALL tasks missing links
 
-Depends on: monday_client.py, dropbox_client.py, folder_builder.py, state.py
+Depends on: task.py, dashboard.py, monday_client.py, dropbox_client.py, state.py
 Used by: main.py
 """
 
@@ -15,8 +15,9 @@ from datetime import datetime, timezone
 
 import monday_client
 import dropbox_client
-import dashboard
 import state
+from dashboard import Board
+from task import Task
 
 
 def process_item(item: dict, board_id: str, board_config: dict, config: dict, force: bool = False) -> None:
@@ -27,34 +28,34 @@ def process_item(item: dict, board_id: str, board_config: dict, config: dict, fo
     3. Create folder in Dropbox
     4. Get shareable link
     5. Write link back to Monday.com
-    """
-    item_id = item["id"]
-    item_name = item["name"]
-    link_column = board_config["dropbox_link_column"]
 
-    # Skip if link already exists (unless forced)
-    existing_link = monday_client.get_column_value(item, link_column)
-    if existing_link and not force:
-        print(f"  ↷ Skipping '{item_name}' — Dropbox link already set.")
+    item         — Raw item dict from monday_client
+    board_id     — Monday.com board ID string
+    board_config — The board's config block from config.json
+    config       — Full config dict (needed for dropbox_root)
+    force        — If True, re-create even if a link already exists
+    """
+    board = Board(board_id, board_config)
+    task = Task(item, board, config.get("monday_subdomain", ""))
+
+    if task.has_folder and not force:
+        print(f"  ↷ Skipping '{task.task_name}' — Dropbox link already set.")
         return
 
-    print(f"\n→ Processing: {item_name}")
+    print(f"\n→ Processing: {task.task_name}")
 
     try:
-        # Build the Dropbox folder path
-        db = dashboard.Dashboard(board_id, board_config)
-        path = db.build_path(item, config["dropbox_root"])
+        path = board.build_path(task.raw_item(), config["dropbox_root"])
         print(f"  Path: {path}")
 
-        # Create the folder in Dropbox
         dropbox_client.create_folder(path)
 
-        # Get a shareable link
         link_url = dropbox_client.get_shared_link(path)
         print(f"  Link: {link_url}")
 
-        # Write the link back to Monday.com
-        monday_client.update_dropbox_link(item_id, board_id, link_column, link_url)
+        monday_client.update_dropbox_link(
+            task.id, board.board_id, board.dropbox_link_column, link_url
+        )
         print(f"  ✓ Link written to Monday.com task.")
 
     except Exception as e:
@@ -64,37 +65,54 @@ def process_item(item: dict, board_id: str, board_config: dict, config: dict, fo
 
 def run_polling(config: dict) -> None:
     """
-    Polling mode: Check all boards for new tasks created since last run.
-    Updates state.json at the end. Respects auto_enabled flag from web UI.
+    Polling mode: Check all boards for new tasks since last run.
+    For each task in the Form Requests group with no Dropbox link:
+      - Department recognized → auto-create folder immediately
+      - Department unrecognized → log it (shows in Needs Attention in the web UI)
+    Updates state.json timestamps at the end.
+    Respects auto_enabled flag from web UI.
     """
     st = state.load_state()
 
-    # Respect auto_enabled flag set by web UI
     if st.get("auto_enabled") is False:
         print("Auto-create is disabled. Enable in the web UI to resume.")
         return
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    subdomain = config.get("monday_subdomain", "")
 
     for board_id, board_config in config["boards"].items():
-        board_name = board_config["name"]
+        board = Board(board_id, board_config)
         since = st.get(board_id, "2000-01-01T00:00:00+00:00")
-        print(f"\n[{board_name}] Checking for new items since {since}...")
+        print(f"\n[{board.name}] Checking for new items since {since}...")
 
         try:
             items = monday_client.get_new_items(board_id, since)
             print(f"  Found {len(items)} new item(s).")
 
             for item in items:
+                task = Task(item, board, subdomain)
+
+                if not task.is_new:
+                    print(f"  → Skipping '{task.task_name}' (group: '{task.group_title}')")
+                    continue
+
+                if task.has_folder:
+                    print(f"  ↷ Skipping '{task.task_name}' — already has a Dropbox link.")
+                    continue
+
+                if board.is_ambiguous(task.department):
+                    print(f"  ⚠ '{task.task_name}' — department '{task.department}' not recognized, needs manual review.")
+                    continue
+
                 try:
                     process_item(item, board_id, board_config, config)
                 except Exception as e:
-                    print(f"  ✗ Error processing '{item.get('name', item['id'])}': {e}", file=sys.stderr)
+                    print(f"  ✗ Failed to auto-create folder for '{task.task_name}': {e}", file=sys.stderr)
 
         except Exception as e:
-            print(f"  ✗ Could not fetch items from {board_name}: {e}", file=sys.stderr)
+            print(f"  ✗ Could not fetch items from {board.name}: {e}", file=sys.stderr)
 
-    # Update timestamps for next run
     for board_id in config["boards"]:
         st[board_id] = now_iso
 
@@ -129,22 +147,24 @@ def run_all(config: dict) -> None:
     Items that already have links are skipped automatically by process_item.
     Does not update state.json.
     """
+    subdomain = config.get("monday_subdomain", "")
+
     for board_id, board_config in config["boards"].items():
-        board_name = board_config["name"]
-        print(f"\n[{board_name}] Fetching all items...")
+        board = Board(board_id, board_config)
+        print(f"\n[{board.name}] Fetching all items...")
 
         try:
-            # Very old date returns all items
             items = monday_client.get_new_items(board_id, "2000-01-01T00:00:00+00:00")
             print(f"  Found {len(items)} item(s) total.")
 
             for item in items:
+                task = Task(item, board, subdomain)
                 try:
                     process_item(item, board_id, board_config, config)
                 except Exception as e:
-                    print(f"  ✗ Error processing '{item.get('name', item['id'])}': {e}", file=sys.stderr)
+                    print(f"  ✗ Error processing '{task.task_name}': {e}", file=sys.stderr)
 
         except Exception as e:
-            print(f"  ✗ Could not fetch items from {board_name}: {e}", file=sys.stderr)
+            print(f"  ✗ Could not fetch items from {board.name}: {e}", file=sys.stderr)
 
     print("\nDone.")

@@ -36,6 +36,9 @@ def get_new_items(board_id: str, since_iso: str) -> list:
             id
             name
             created_at
+            group {
+              title
+            }
             column_values(ids: $columnIds) {
               id
               text

@@ -81,21 +81,29 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const { boardId, itemId, customPath } = await req.json();
 
-  if (!boardId || !itemId || !customPath) {
+  if (!boardId || !itemId) {
     return NextResponse.json(
-      { error: "boardId, itemId, and customPath are required" },
+      { error: "boardId and itemId are required" },
       { status: 400 }
     );
   }
 
-  // Escape backslashes and single quotes in path to avoid breaking the Python string
-  const safePath = String(customPath).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   const escaped = PROJECT_ROOT.replace(/"/g, '\\"');
 
-  const { ok, data } = await runPython(
-    `import json,sys; sys.path.insert(0,'${escaped}'); from web_auto_creator import create_folder_at_path; create_folder_at_path('${boardId}','${itemId}','${safePath}')`
-  );
-
-  if (!ok) return NextResponse.json(data, { status: 500 });
-  return NextResponse.json(data);
+  if (customPath) {
+    // Manual path chosen by user (ambiguous task) — create folder at that exact path
+    const safePath = String(customPath).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const { ok, data } = await runPython(
+      `import json,sys; sys.path.insert(0,'${escaped}'); from web_auto_creator import create_folder_at_path; create_folder_at_path('${boardId}','${itemId}','${safePath}')`
+    );
+    if (!ok) return NextResponse.json(data, { status: 500 });
+    return NextResponse.json(data);
+  } else {
+    // Auto-create for a ready task — path is computed server-side via process_item()
+    const { ok, data } = await runPython(
+      `import json,sys; sys.path.insert(0,'${escaped}'); from web_auto_creator import auto_create_ready_task; auto_create_ready_task('${boardId}','${itemId}')`
+    );
+    if (!ok) return NextResponse.json(data, { status: 500 });
+    return NextResponse.json(data);
+  }
 }

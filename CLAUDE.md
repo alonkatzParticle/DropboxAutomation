@@ -36,6 +36,40 @@ fix any part of the code without needing to understand the whole system.
 
 ---
 
+## Questions to Ask Before Adding Any New Feature
+
+Before writing any code for a new feature, always ask these questions:
+
+1. **Does it belong on an existing object?**
+   The app has these core objects — check if the feature is a new property or method
+   on one of these before creating anything new:
+   - `Dashboard` (board config, path building, department rules) — in `dashboard.py`
+   - `Task` (Monday item + UI state like isNew, needsAttention) — currently plain dicts,
+     should eventually become a proper class
+   - `Board` (settings + tasks + hierarchies) — currently split across config dict + Dashboard
+
+2. **Is anything hardcoded that should be configurable?**
+   New behavior that varies per-board (group names, label names, column IDs, etc.)
+   must go in `config.json`, not in code.
+
+3. **What happens when a second board is added?**
+   Every feature must work for any number of boards without code changes.
+   If it only works for one board, it's not done yet.
+
+4. **Is there an existing function that already does this?**
+   Check before writing new code:
+   - `process_item()` — creates a Dropbox folder and writes the link to Monday.com
+   - `Dashboard.build_path()` — builds the full folder path from a task's column values
+   - `Dashboard.is_ambiguous()` — checks if a department has a matching rule
+   - `monday_client.get_column_value()` — reads a column value from a task dict
+
+5. **Where does the task's state live?**
+   - Column values (product, department, platform) → come from Monday.com API
+   - UI-only state (isNew, needsAttention, isApproved) → computed in `web_auto_creator.py`,
+     should eventually live on a Task object
+
+---
+
 ## File Layout of This Project
 
 ```

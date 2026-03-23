@@ -28,6 +28,7 @@ export interface BoardConfig {
   bundle_keywords?: string[];
   other_keywords?: string[];
   fallback_values?: Record<string, string>;
+  form_requests_group?: string;
 }
 
 export interface MondayColumn {
@@ -36,10 +37,16 @@ export interface MondayColumn {
   type: string;
 }
 
+export interface MondayGroup {
+  id: string;
+  title: string;
+}
+
 interface BoardPanelProps {
   boardId: string;
   board: BoardConfig;
   availableColumns: MondayColumn[];
+  availableGroups?: MondayGroup[];
   onSave: (boardId: string, updated: BoardConfig) => void;
 }
 
@@ -82,7 +89,7 @@ function colTitle(id: string, cols: MondayColumn[]) {
   return cols.find((c) => c.id === id)?.title ?? id;
 }
 
-export default function BoardPanel({ boardId, board, availableColumns, onSave }: BoardPanelProps) {
+export default function BoardPanel({ boardId, board, availableColumns, availableGroups = [], onSave }: BoardPanelProps) {
   const [draft, setDraft] = useState<BoardConfig>(board);
   const [editingCols, setEditingCols] = useState(false);
   const [colsSnapshot, setColsSnapshot] = useState<Record<string, string>>(board.columns);
@@ -152,7 +159,7 @@ export default function BoardPanel({ boardId, board, availableColumns, onSave }:
   return (
     <div className="border border-border/60 rounded-xl p-5 space-y-6 bg-card flex-1 min-w-0">
 
-      {/* Board Settings — Dropbox link column */}
+      {/* Board Settings — Dropbox link column + Form Requests group */}
       <div className="space-y-3">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Board Settings</p>
         <div className="flex items-center gap-3">
@@ -168,6 +175,34 @@ export default function BoardPanel({ boardId, board, availableColumns, onSave }:
                 <span className="font-mono text-xs text-muted-foreground">({draft.dropbox_link_column})</span>
               )}
             </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="h-5 w-5 shrink-0" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <div>
+              <label className="text-xs font-semibold text-blue-600 block">Form Requests Group</label>
+              <span className="text-xs text-muted-foreground">New tasks are sourced from this group</span>
+            </div>
+            {availableGroups.length > 0 ? (
+              <select
+                value={draft.form_requests_group ?? ""}
+                onChange={(e) => setDraft((d) => ({ ...d, form_requests_group: e.target.value }))}
+                className="h-8 rounded-md border border-border/60 bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="" disabled>Select a group…</option>
+                {availableGroups.map((g) => (
+                  <option key={g.id} value={g.title}>{g.title}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={draft.form_requests_group ?? ""}
+                onChange={(e) => setDraft((d) => ({ ...d, form_requests_group: e.target.value }))}
+                placeholder="e.g., Form Requests"
+                className="h-8 rounded-md border border-border/60 bg-background px-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            )}
           </div>
         </div>
       </div>

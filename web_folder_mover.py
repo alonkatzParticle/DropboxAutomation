@@ -8,14 +8,14 @@ Handles two operations:
 
 Split from web.py to keep each file under 150 lines (per CLAUDE.md rules).
 
-Depends on: monday_client.py, dropbox_client.py, folder_builder.py, state.py
+Depends on: monday_client.py, dropbox_client.py, dashboard.py, state.py
 """
 
 import json
 import monday_client
 import dropbox_client
-import dashboard
 import state
+from dashboard import Board
 
 
 def _get_link_url(item: dict, column_id: str) -> str:
@@ -62,14 +62,14 @@ def check_task_folder(board_id: str, item_id: str) -> dict:
     except Exception as e:
         return {"success": False, "error": f"Could not fetch task: {e}"}
 
+    board = Board(str(board_id), board_config)
+
     try:
-        db = dashboard.Dashboard(str(board_id), board_config)
-        proposed_path = db.build_path(item, config["dropbox_root"])
+        proposed_path = board.build_path(item, config["dropbox_root"])
     except Exception as e:
         proposed_path = ""
 
-    link_col = board_config.get("dropbox_link_column", "")
-    current_link = _get_link_url(item, link_col)
+    current_link = _get_link_url(item, board.dropbox_link_column)
 
     result = {
         "success": True,
@@ -114,8 +114,8 @@ def move_task_folder(board_id: str, item_id: str, new_path: str) -> dict:
     except Exception as e:
         return {"success": False, "error": f"Could not fetch task: {e}"}
 
-    link_col = board_config.get("dropbox_link_column", "")
-    current_link = _get_link_url(item, link_col)
+    board = Board(str(board_id), board_config)
+    current_link = _get_link_url(item, board.dropbox_link_column)
 
     if not current_link:
         return {"success": False, "error": "This task has no existing Dropbox folder to move"}
@@ -131,6 +131,6 @@ def move_task_folder(board_id: str, item_id: str, new_path: str) -> dict:
     if not new_link:
         return {"success": False, "error": "Folder moved but could not generate a new shared link"}
 
-    monday_client.update_dropbox_link(item_id, str(board_id), link_col, new_link)
+    monday_client.update_dropbox_link(item_id, str(board_id), board.dropbox_link_column, new_link)
 
     return {"success": True, "newLink": new_link, "newPath": new_path}

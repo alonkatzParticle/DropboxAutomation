@@ -4,11 +4,12 @@
  * auto-create/page.tsx — Auto-Creator page
  *
  * Fetches all Monday.com tasks missing a Dropbox folder and splits them into:
+ *   - New Tasks: detected by the Python poller (queued via new_item_ids in state.json)
  *   - Needs Attention: department not recognized → user picks path manually
  *   - Ready to Create: department matched → one-click or "Create All" creation
  *
  * A toggle bar at the top enables live detection: when ON, the page polls
- * Monday.com every 30 seconds and highlights any tasks that arrived via webhook.
+ * Monday.com every 30 seconds and surfaces any tasks queued by the Python poller.
  *
  * Side panel shows existing department hierarchy rules for reference while
  * the user is choosing a location for an ambiguous task.
@@ -21,7 +22,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Loader2, RefreshCw, AlertTriangle, Zap, Clock, CheckCircle2, ChevronDown, ChevronRight, Flag, ExternalLink } from "lucide-react";
+import { Loader2, RefreshCw, AlertTriangle, Zap, CheckCircle2, ChevronDown, ChevronRight, Flag, ExternalLink, Bell } from "lucide-react";
 import AmbiguousTaskCard, { AmbiguousTask } from "@/components/AmbiguousTaskCard";
 import ReadyTasksList, { ReadyTask } from "@/components/ReadyTasksList";
 
@@ -41,6 +42,7 @@ export default function AutoCreatorPage() {
   const [ready, setReady] = useState<ReadyTask[]>([]);
   const [ambiguous, setAmbiguous] = useState<AmbiguousTask[]>([]);
   const [approvedWithFolder, setApprovedWithFolder] = useState<{ id: string; boardId: string; boardName: string; taskName: string; mondayUrl: string; dropboxLink: string }[]>([]);
+  const [groupWarnings, setGroupWarnings] = useState<{ boardId: string; boardName: string; configured: string; foundGroups: string[] }[]>([]);
   // Per-board department rules: boardId → { name, department_rules }
   const [boardsInfo, setBoardsInfo] = useState<Record<string, BoardInfo>>({});
   const [dropboxRoot, setDropboxRoot] = useState("/Creative 2026");
@@ -51,18 +53,12 @@ export default function AutoCreatorPage() {
   const [autoEnabled, setAutoEnabled] = useState(false);
   const [togglingAuto, setTogglingAuto] = useState(false);
 
-  // IDs of tasks that arrived via webhook — highlighted with a "New" badge
-  const [highlightedIds, setHighlightedIds] = useState<Set<string>>(new Set());
+  // IDs dismissed by the user — hides them from the "New Tasks" section
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
 
   // "Last checked X seconds ago" counter — resets to 0 after each load
   const [secsSinceCheck, setSecsSinceCheck] = useState(0);
   const secsSinceCheckRef = useRef(0);
-
-  // Banner shown when new ambiguous tasks are detected
-  const [newCount, setNewCount] = useState(0);
-
-  // Count of folders auto-created in the background (shown briefly in the toggle bar)
-  const [autoCreatedCount, setAutoCreatedCount] = useState(0);
 
   // History of the last 50 auto-created folders
   const [history, setHistory] = useState<{ taskName: string; boardName: string; previewPath: string; createdAt: string }[]>([]);
@@ -70,15 +66,21 @@ export default function AutoCreatorPage() {
   // Index of the history entry whose full path is currently expanded
   const [expandedHistoryIndex, setExpandedHistoryIndex] = useState<number | null>(null);
 
-  // Maps taskId → last known status, used to detect when a task becomes "Approved"
-  const taskStatusesRef = useRef<Map<string, string> | null>(null);
-
   // Collapsed state for each section (default all open)
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+
+  // Board filter — null means no board selected yet (user must pick)
+  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
 
   /** Toggle a section open/closed by name */
   function toggleSection(name: string) {
     setCollapsedSections(prev => ({ ...prev, [name]: !prev[name] }));
+  }
+
+  /** Select a board and persist to localStorage */
+  function selectBoard(id: string) {
+    setSelectedBoardId(id);
+    localStorage.setItem("auto-create-board", id);
   }
 
   /**
@@ -102,6 +104,7 @@ export default function AutoCreatorPage() {
       setReady(allReady);
       setAmbiguous(allAmbiguous);
       setApprovedWithFolder(tasks.approvedWithFolder ?? []);
+      setGroupWarnings(tasks.groupWarnings ?? []);
       setDropboxRoot(cfg.dropbox_root ?? "/Creative 2026");
 
       // Build per-board info map from cfg.boards
@@ -114,10 +117,6 @@ export default function AutoCreatorPage() {
       }
       setBoardsInfo(info);
 
-      // Seed the status map so subsequent silent polls detect status changes to "Approved"
-      const statusMap = new Map<string, string>();
-      [...allReady, ...allAmbiguous].forEach(t => statusMap.set(t.id, t.status ?? ""));
-      taskStatusesRef.current = statusMap;
     } catch {
       setError("Failed to load tasks. Check that the server is running.");
     }
@@ -129,8 +128,9 @@ export default function AutoCreatorPage() {
 
   /**
    * Silent background poll — no loading spinner, no page disruption.
-   * Detects tasks whose status just changed to "Approved" and auto-creates
-   * their Dropbox folders. Also surfaces newly created ambiguous tasks.
+   * Fetches all tasks, then auto-creates Dropbox folders for any ready tasks
+   * that are in the Form Requests group (isNew) and not yet dismissed.
+   * Ambiguous tasks are skipped and stay in Needs Attention.
    * Called automatically every 30 seconds when auto-detect is ON.
    */
   const silentPoll = useCallback(async () => {
@@ -138,84 +138,60 @@ export default function AutoCreatorPage() {
       const res = await fetch("/api/auto-create");
       const tasks = await res.json();
 
-      const allReady: ReadyTask[] = tasks.ready ?? [];
-      const allAmbiguous: AmbiguousTask[] = tasks.ambiguous ?? [];
+      const readyTasks: ReadyTask[] = tasks.ready ?? [];
 
-      // Detect tasks that just became "Approved" (status change since last poll)
-      const newlyApprovedReady = allReady.filter(t => {
-        const prevStatus = taskStatusesRef.current?.get(t.id);
-        return t.isApproved && prevStatus !== undefined && prevStatus !== "approved";
-      });
-      // Also detect brand-new tasks (not seen before) that are already Approved
-      const brandNewApproved = allReady.filter(t =>
-        t.isApproved && !taskStatusesRef.current?.has(t.id)
-      );
-      const toAutoCreate = [...newlyApprovedReady, ...brandNewApproved];
+      // Auto-create folders for ready Form Request tasks
+      const toCreate = readyTasks.filter(t => t.isNew);
+      if (toCreate.length > 0) {
+        const results = await Promise.all(
+          toCreate.map(t =>
+            fetch("/api/auto-create", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ boardId: t.boardId, itemId: t.id }),
+            })
+              .then(r => r.json())
+              .then(data => ({ task: t, data }))
+              .catch(() => null)
+          )
+        );
 
-      // Find brand-new ambiguous tasks to surface
-      const newAmbiguous = allAmbiguous.filter(t => !taskStatusesRef.current?.has(t.id));
+        // Log successful creations to history
+        const now = new Date().toISOString();
+        const newEntries = results
+          .filter((r): r is { task: ReadyTask; data: { success: boolean; path: string } } =>
+            r !== null && r.data?.success === true
+          )
+          .map(({ task, data }) => ({
+            taskName: task.taskName,
+            boardName: task.boardName,
+            previewPath: data.path,
+            createdAt: now,
+          }));
 
-      // Update status map with latest statuses
-      [...allReady, ...allAmbiguous].forEach(t =>
-        taskStatusesRef.current?.set(t.id, t.status ?? "")
-      );
-
-      if (toAutoCreate.length > 0 || newAmbiguous.length > 0) {
-        const newReady = toAutoCreate;
-
-        // Auto-create Dropbox folders for newly-approved ready tasks in the background
-        if (newReady.length > 0) {
-          fetch("/api/run", {
+        if (newEntries.length > 0) {
+          fetch("/api/history", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: "selected",
-              items: newReady.map(t => ({ boardId: t.boardId, itemId: t.id })),
-            }),
+            body: JSON.stringify(newEntries),
           })
-            .then(() => {
-              // Save to history
-              const now = new Date().toISOString();
-              const historyEntries = newReady.map(t => ({
-                taskName: t.taskName,
-                boardName: t.boardName,
-                previewPath: t.previewPath,
-                createdAt: now,
-              }));
-              fetch("/api/history", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(historyEntries),
-              })
-                .then(r => r.json())
-                .then(d => setHistory(d.entries ?? []))
-                .catch(() => {});
-
-              // Show "X folders created" notice for 10 seconds, then quietly remove from list
-              setAutoCreatedCount(c => c + newReady.length);
-              setTimeout(() => {
-                setAutoCreatedCount(0);
-                setReady(prev => prev.filter(t => !newReady.some(n => n.id === t.id)));
-              }, 10_000);
-            })
+            .then(r => r.json())
+            .then(d => setHistory(d.entries ?? []))
             .catch(() => {});
         }
 
-        // Surface new ambiguous tasks at the top of the list with a highlight
-        if (newAmbiguous.length > 0) {
-          setAmbiguous(prev => [...newAmbiguous, ...prev]);
-          setHighlightedIds(prev => new Set([...prev, ...newAmbiguous.map(t => t.id)]));
-          setNewCount(c => c + newAmbiguous.length);
-
-          setTimeout(() => {
-            setHighlightedIds(prev => {
-              const next = new Set(prev);
-              newAmbiguous.forEach(t => next.delete(t.id));
-              return next;
-            });
-            setNewCount(0);
-          }, 60_000);
-        }
+        // Refresh task list so newly linked tasks disappear
+        const refreshRes = await fetch("/api/auto-create");
+        const refreshed = await refreshRes.json();
+        setReady(refreshed.ready ?? []);
+        setAmbiguous(refreshed.ambiguous ?? []);
+        setApprovedWithFolder(refreshed.approvedWithFolder ?? []);
+        setGroupWarnings(refreshed.groupWarnings ?? []);
+      } else {
+        setReady(readyTasks);
+        setAmbiguous(tasks.ambiguous ?? []);
+        setApprovedWithFolder(tasks.approvedWithFolder ?? []);
+        setGroupWarnings(tasks.groupWarnings ?? []);
       }
     } catch {
       // Silently ignore — don't disrupt the UI on a background poll failure
@@ -231,6 +207,12 @@ export default function AutoCreatorPage() {
     const id = setInterval(silentPoll, 30_000);
     return () => clearInterval(id);
   }, [autoEnabled, silentPoll]);
+
+  /** On mount: restore board selection from localStorage */
+  useEffect(() => {
+    const saved = localStorage.getItem("auto-create-board");
+    if (saved) setSelectedBoardId(saved);
+  }, []);
 
   /** On mount: load tasks, fetch auto_enabled flag, and load history */
   useEffect(() => {
@@ -309,19 +291,16 @@ export default function AutoCreatorPage() {
             </span>
           )}
 
-          {/* Folders auto-created notice */}
-          {autoCreatedCount > 0 && (
-            <Badge className="bg-green-100 text-green-700 border-green-300 gap-1" variant="outline">
-              ✓ {autoCreatedCount} folder{autoCreatedCount > 1 ? "s" : ""} created automatically
-            </Badge>
-          )}
-
-          {/* New ambiguous tasks detected */}
-          {newCount > 0 && (
-            <Badge className="bg-amber-100 text-amber-700 border-amber-300 gap-1" variant="outline">
-              ⚠ {newCount} new task{newCount > 1 ? "s" : ""} need attention
-            </Badge>
-          )}
+          {/* New tasks detected badge */}
+          {(() => {
+            const newCount = [...ready, ...ambiguous].filter(t => t.isNew && !dismissedIds.has(t.id) && (!selectedBoardId || t.boardId === selectedBoardId)).length;
+            return newCount > 0 ? (
+              <Badge className="bg-blue-100 text-blue-700 border-blue-300 gap-1" variant="outline">
+                <Bell className="h-3 w-3" />
+                {newCount} new task{newCount > 1 ? "s" : ""} in Form Requests
+              </Badge>
+            ) : null;
+          })()}
 
           {/* Helper text when auto is OFF */}
           {!autoEnabled && (
@@ -331,16 +310,42 @@ export default function AutoCreatorPage() {
           )}
         </div>
 
+        {/* Group name mismatch warnings */}
+        {groupWarnings.filter(w => !selectedBoardId || w.boardId === selectedBoardId).map(w => (
+          <div key={w.boardId} className="flex items-start gap-2 p-3 rounded-lg border border-amber-300 bg-amber-50 text-sm">
+            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-medium">{w.boardName}:</span> Form Requests group not found.{" "}
+              Config says <code className="bg-amber-100 px-1 rounded">{w.configured}</code> but groups on this board are:{" "}
+              <span className="font-medium">{w.foundGroups.join(", ")}</span>.{" "}
+              Update <code className="bg-amber-100 px-1 rounded">form_requests_group</code> in Settings.
+            </div>
+          </div>
+        ))}
+
         {/* Page header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold">Auto-Creator</h1>
             <p className="text-sm text-muted-foreground">Monday.com tasks missing a Dropbox folder</p>
           </div>
-          <Button variant="ghost" size="sm" onClick={load} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Board selector — populated from config, not hardcoded */}
+            <select
+              value={selectedBoardId ?? ""}
+              onChange={e => selectBoard(e.target.value)}
+              className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+            >
+              <option value="" disabled>Select a board…</option>
+              {Object.entries(boardsInfo).map(([id, info]) => (
+                <option key={id} value={id}>{info.name}</option>
+              ))}
+            </select>
+            <Button variant="ghost" size="sm" onClick={load} disabled={loading}>
+              <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Loading state */}
@@ -358,23 +363,36 @@ export default function AutoCreatorPage() {
         {/* Task sections */}
         {!loading && !error && (
           <>
-            {/* Recently Created — tasks created in the last 5 minutes */}
-            {(() => {
-              const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
-              const recentAmbiguous = ambiguous.filter(t => t.createdAt && new Date(t.createdAt) >= fiveMinAgo);
-              const recentReady = ready.filter(t => t.createdAt && new Date(t.createdAt) >= fiveMinAgo);
-              const total = recentAmbiguous.length + recentReady.length;
+            {/* Empty state — no board selected */}
+            {!selectedBoardId && (
+              <div className="flex flex-col items-center justify-center py-24 text-muted-foreground">
+                <p className="text-lg font-medium">Select a board to get started</p>
+                <p className="text-sm mt-1">Use the dropdown above to choose a board</p>
+              </div>
+            )}
+
+            {/* New Tasks — tasks in the "Form Requests" group with no Dropbox folder */}
+            {selectedBoardId && (() => {
+              const newAmbiguous = ambiguous.filter(t => t.isNew && !dismissedIds.has(t.id) && t.boardId === selectedBoardId);
+              const newReady = ready.filter(t => t.isNew && !dismissedIds.has(t.id) && t.boardId === selectedBoardId);
+              const total = newAmbiguous.length + newReady.length;
               if (total === 0) return null;
               return (
-                <section className="space-y-3 border border-green-200 rounded-lg p-4 bg-green-50/40">
+                <section className="space-y-3 border border-blue-200 rounded-lg p-4 bg-blue-50/40">
                   <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-green-600" />
-                    <h2 className="font-medium text-sm">Recently Created</h2>
-                    <Badge variant="outline" className="text-green-600 border-green-300">{total}</Badge>
-                    <span className="text-xs text-muted-foreground">in the last 5 minutes</span>
+                    <Bell className="h-4 w-4 text-blue-600" />
+                    <h2 className="font-medium text-sm">New Tasks</h2>
+                    <Badge variant="outline" className="text-blue-600 border-blue-300">{total}</Badge>
+                    <span className="text-xs text-muted-foreground">detected by polling — no folder yet</span>
+                    <button
+                      className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setDismissedIds(prev => new Set([...prev, ...newAmbiguous.map(t => t.id), ...newReady.map(t => t.id)]))}
+                    >
+                      Dismiss all
+                    </button>
                   </div>
                   <div className="space-y-2">
-                    {recentAmbiguous.map(task => (
+                    {newAmbiguous.map(task => (
                       <AmbiguousTaskCard
                         key={task.id}
                         task={task}
@@ -384,17 +402,18 @@ export default function AutoCreatorPage() {
                         highlighted
                       />
                     ))}
-                    {recentReady.map(task => (
-                      <div key={task.id} className="flex items-center justify-between gap-3 bg-white rounded-lg px-4 py-3 border border-green-100">
+                    {newReady.map(task => (
+                      <div key={task.id} className="flex items-center justify-between gap-3 bg-white rounded-lg px-4 py-3 border border-blue-100">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
                             <p className="text-sm font-medium truncate">{task.taskName}</p>
-                            <Badge className="bg-green-100 text-green-700 border-green-300 text-xs" variant="outline">New</Badge>
+                            <Badge className="bg-blue-100 text-blue-700 border-blue-300 text-xs" variant="outline">New</Badge>
                             <a href={task.mondayUrl} target="_blank" rel="noreferrer" className="shrink-0 text-muted-foreground hover:text-foreground">
-                              <RefreshCw className="h-3 w-3" />
+                              <ExternalLink className="h-3 w-3" />
                             </a>
                           </div>
-                          <p className="text-xs text-muted-foreground font-mono">{task.previewPath}</p>
+                          <p className="text-xs text-muted-foreground font-mono truncate">{task.previewPath}</p>
+                          <p className="text-xs text-muted-foreground">{task.boardName}</p>
                         </div>
                       </div>
                     ))}
@@ -404,7 +423,10 @@ export default function AutoCreatorPage() {
             })()}
 
             {/* Needs Attention — tasks with unrecognized departments */}
-            {ambiguous.length > 0 && (
+            {selectedBoardId && (() => {
+              const visibleAmbiguous = ambiguous.filter(t => t.boardId === selectedBoardId);
+              if (visibleAmbiguous.length === 0) return null;
+              return (
               <section className="space-y-3">
                 <button
                   className="flex items-center gap-2 w-full text-left"
@@ -413,7 +435,7 @@ export default function AutoCreatorPage() {
                   {collapsedSections["attention"] ? <ChevronRight className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                   <AlertTriangle className="h-4 w-4 text-amber-500" />
                   <h2 className="font-medium text-sm">Needs Attention</h2>
-                  <Badge variant="outline" className="text-amber-600 border-amber-300">{ambiguous.length}</Badge>
+                  <Badge variant="outline" className="text-amber-600 border-amber-300">{visibleAmbiguous.length}</Badge>
                 </button>
                 {!collapsedSections["attention"] && (
                   <>
@@ -421,33 +443,36 @@ export default function AutoCreatorPage() {
                       No Dropbox folder yet, and no matching hierarchy rule — choose a folder location for each task below.
                     </p>
                     <div className="space-y-3">
-                      {ambiguous.map(task => (
+                      {visibleAmbiguous.map(task => (
                         <AmbiguousTaskCard
                           key={task.id}
                           task={task}
                           dropboxRoot={dropboxRoot}
                           deptRules={boardsInfo[task.boardId]?.department_rules ?? {}}
                           onCreated={load}
-                          highlighted={highlightedIds.has(task.id)}
+                          highlighted={task.isNew && !dismissedIds.has(task.id)}
                         />
                       ))}
                     </div>
                   </>
                 )}
               </section>
-            )}
+              );
+            })()}
 
             {/* Ready to Create */}
-            <ReadyTasksList
-              tasks={ready}
-              onCreated={load}
-              highlightedIds={highlightedIds}
-              collapsed={collapsedSections["ready"] ?? false}
-              onToggleCollapse={() => toggleSection("ready")}
-            />
+            {selectedBoardId && (
+              <ReadyTasksList
+                tasks={ready.filter(t => t.boardId === selectedBoardId)}
+                onCreated={load}
+                highlightedIds={new Set(ready.filter(t => t.isNew && !dismissedIds.has(t.id)).map(t => t.id))}
+                collapsed={collapsedSections["ready"] ?? false}
+                onToggleCollapse={() => toggleSection("ready")}
+              />
+            )}
 
             {/* Already Has a Folder — Approved tasks that already had a Dropbox link (no new folder created) */}
-            {approvedWithFolder.length > 0 && (
+            {selectedBoardId && approvedWithFolder.filter(t => t.boardId === selectedBoardId).length > 0 && (
               <section className="space-y-3">
                 <button
                   className="flex items-center gap-2 w-full text-left"
@@ -456,7 +481,7 @@ export default function AutoCreatorPage() {
                   {collapsedSections["linked"] ? <ChevronRight className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                   <Flag className="h-4 w-4 text-blue-500" />
                   <h2 className="font-medium text-sm">Already Has a Folder</h2>
-                  <Badge variant="outline" className="text-blue-600 border-blue-300">{approvedWithFolder.length}</Badge>
+                  <Badge variant="outline" className="text-blue-600 border-blue-300">{approvedWithFolder.filter(t => t.boardId === selectedBoardId).length}</Badge>
                 </button>
                 {!collapsedSections["linked"] && (
                   <>
@@ -464,7 +489,7 @@ export default function AutoCreatorPage() {
                       These tasks are Approved but already had a Dropbox folder — no new folder was created.
                     </p>
                     <div className="space-y-2">
-                      {approvedWithFolder.map(task => (
+                      {approvedWithFolder.filter(t => t.boardId === selectedBoardId).map(task => (
                         <div key={task.id} className="flex items-center gap-3 border border-blue-200 bg-blue-50/30 rounded-lg px-4 py-3">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
@@ -500,8 +525,8 @@ export default function AutoCreatorPage() {
           </p>
         </div>
 
-        {/* One block per board showing that board's dept rules */}
-        {Object.entries(boardsInfo).map(([boardId, board]) => (
+        {/* One block per board showing that board's dept rules — filtered to selected board */}
+        {Object.entries(boardsInfo).filter(([id]) => !selectedBoardId || id === selectedBoardId).map(([boardId, board]) => (
           <div key={boardId} className="space-y-2">
             <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/70">{board.name}</p>
             {Object.entries(board.department_rules).map(([name, rule]) => (

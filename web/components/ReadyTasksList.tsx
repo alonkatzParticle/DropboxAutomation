@@ -25,6 +25,7 @@ export interface ReadyTask {
   previewPath: string;
   status?: string;
   isApproved?: boolean;
+  isNew?: boolean;
   createdAt?: string;
 }
 

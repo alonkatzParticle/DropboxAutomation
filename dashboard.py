@@ -31,21 +31,31 @@ def _get_date_folder(now: datetime) -> str:
     index = months_elapsed + 1
     return f"{index:02d}_{now.strftime('%B')} {now.strftime('%Y')}"
 
-class Dashboard:
+class Board:
     """
-    Represents a specific Monday.com board and handles its folder path generation.
+    Represents a specific Monday.com board.
+    Holds the board's settings, department rules, and path-building logic.
     """
     def __init__(self, board_id: str, config: dict):
         self.board_id = board_id
         self.config = config
         self.name = config.get("name", "Unknown Board")
-        self.columns = config.get("columns", {})
         self.media_type = config.get("media_type", "")
+        self.columns = config.get("columns", {})
         self.bundle_keywords = config.get("bundle_keywords", [])
         self.other_keywords = config.get("other_keywords", [])
         self.fallback = config.get("fallback_values", {})
         self.department_rules = config.get("department_rules", {})
         self.fixed_level_values = config.get("fixed_level_values", {})
+
+        # Task-level settings — stored on Board so Task can read them via self.board
+        self.dropbox_link_column = config.get("dropbox_link_column", "")
+        self.status_column = config.get("status_column", "status")
+        self.approved_label = config.get("approved_label", "Approved").lower()
+        self.completed_labels = [
+            lbl.lower() for lbl in config.get("completed_labels", ["Done"])
+        ]
+        self.form_requests_group = config.get("form_requests_group", "Form Requests").lower()
 
     def get_category(self, product_name: str) -> str:
         if product_name in self.other_keywords:
@@ -140,3 +150,7 @@ class Dashboard:
                 parts.append(value)
 
         return "/".join(parts)
+
+
+# Backward-compatibility alias — existing callers using dashboard.Dashboard still work
+Dashboard = Board

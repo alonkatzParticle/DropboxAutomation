@@ -4,8 +4,9 @@ web.py — Web UI and programmatic workflows
 Implements workflows used by the web UI:
 - list_missing: Generate JSON list of tasks without Dropbox links
 - run_items: Process specific items selected by user
+- verify_link: Preview what folder path would be created for a task
 
-Depends on: monday_client.py, dropbox_client.py, folder_builder.py, core.py
+Depends on: task.py, dashboard.py, monday_client.py, core.py, state.py
 Used by: main.py
 """
 
@@ -13,9 +14,10 @@ import json
 import sys
 
 import monday_client
-import dashboard
 import core
 import state
+from dashboard import Board
+from task import Task
 
 
 def list_missing(config: dict) -> None:
@@ -29,43 +31,35 @@ def list_missing(config: dict) -> None:
     results = []
 
     for board_id, board_config in config["boards"].items():
-        link_col = board_config["dropbox_link_column"]
-        status_col = board_config.get("status_column", "status")
-        completed = [lbl.lower() for lbl in board_config.get("completed_labels", ["Done"])]
+        board = Board(board_id, board_config)
 
         try:
             items = monday_client.get_new_items(board_id, "2000-01-01T00:00:00+00:00")
 
             for item in items:
-                # Skip if already has a link
-                if monday_client.get_column_value(item, link_col):
+                task = Task(item, board, subdomain)
+
+                if task.has_folder or task.is_completed:
                     continue
 
-                # Skip if status is completed
-                status_val = monday_client.get_column_value(item, status_col).lower()
-                if status_val in completed:
-                    continue
-
-                # Compute preview path
                 preview = ""
                 try:
-                    db = dashboard.Dashboard(board_id, board_config)
-                    preview = db.build_path(item, config["dropbox_root"])
+                    preview = board.build_path(task.raw_item(), config["dropbox_root"])
                 except Exception:
-                    pass  # Silently omit preview if it fails
+                    pass
 
                 results.append({
-                    "id": item["id"],
-                    "boardId": board_id,
-                    "boardName": board_config["name"],
-                    "mediaType": board_config["media_type"],
-                    "name": item["name"],
-                    "mondayUrl": f"https://{subdomain}.monday.com/boards/{board_id}/pulses/{item['id']}",
+                    "id": task.id,
+                    "boardId": task.board_id,
+                    "boardName": task.board_name,
+                    "mediaType": board.media_type,
+                    "name": item["name"],  # Full raw name (not trimmed) for this list
+                    "mondayUrl": task.monday_url,
                     "previewPath": preview,
                 })
 
         except Exception as e:
-            print(f"Error fetching {board_config['name']}: {e}", file=sys.stderr)
+            print(f"Error fetching {board.name}: {e}", file=sys.stderr)
 
     print(json.dumps(results))
 
@@ -112,11 +106,7 @@ def run_items(items_arg: str, config: dict) -> None:
 def verify_link(board_id: str, item_id: str) -> dict:
     """
     Verify a Monday.com task and return the folder path that would be created.
-
     Used by the web UI's /api/verify-link endpoint for preview before creation.
-
-    board_id  — Monday.com board ID
-    item_id   — Monday.com item ID
 
     Returns dict with: success (bool), taskName, previewPath, or error message
     """
@@ -127,16 +117,17 @@ def verify_link(board_id: str, item_id: str) -> dict:
         return {"success": False, "error": f"Board {board_id} not found"}
 
     try:
+        board = Board(board_id, board_config)
         item = monday_client.get_item_by_id(item_id)
-        db = dashboard.Dashboard(board_id, board_config)
-        preview_path = db.build_path(item, config["dropbox_root"])
+        task = Task(item, board, config.get("monday_subdomain", ""))
+        preview_path = board.build_path(task.raw_item(), config["dropbox_root"])
 
         return {
             "success": True,
-            "taskName": item["name"],
+            "taskName": task.task_name,
             "previewPath": preview_path,
             "boardId": board_id,
-            "itemId": item_id
+            "itemId": item_id,
         }
 
     except Exception as e:

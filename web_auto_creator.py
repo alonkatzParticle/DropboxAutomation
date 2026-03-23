@@ -5,7 +5,7 @@ Fetches all Monday.com tasks missing a Dropbox link and classifies
 each as 'ready' (department rule found) or 'ambiguous' (no matching rule).
 Also handles creating a Dropbox folder at a custom path for ambiguous tasks.
 
-Depends on: monday_client.py, dropbox_client.py, folder_builder.py, state.py
+Depends on: task.py, dashboard.py, monday_client.py, dropbox_client.py, state.py, core.py
 Used by: web/app/api/auto-create/route.ts (via python3 -c)
 """
 
@@ -15,8 +15,10 @@ from datetime import datetime
 
 import monday_client
 import dropbox_client
-import dashboard
 import state
+import core
+from dashboard import Board
+from task import Task
 
 
 def get_pending_tasks_with_status() -> None:
@@ -31,116 +33,110 @@ def get_pending_tasks_with_status() -> None:
     subdomain = config.get("monday_subdomain", "")
     ready = []
     ambiguous = []
-    approved_with_folder = []  # Tasks that are Approved but already have a Dropbox folder
+    approved_with_folder = []
+    group_warnings = []
 
     for board_id, board_config in config["boards"].items():
-        link_col = board_config["dropbox_link_column"]
-        status_col = board_config.get("status_column", "status")
-        completed = [lbl.lower() for lbl in board_config.get("completed_labels", ["Done"])]
-        approved_label = board_config.get("approved_label", "Approved").lower()
-        columns = board_config["columns"]
-        
-        db = dashboard.Dashboard(board_id, board_config)
+        board = Board(board_id, board_config)
 
         try:
             items = monday_client.get_new_items(board_id, "2000-01-01T00:00:00+00:00")
 
+            # Validate that the configured form_requests_group exists on this board
+            found_groups = {
+                (item.get("group") or {}).get("title", "")
+                for item in items
+                if (item.get("group") or {}).get("title")
+            }
+            if found_groups and not any(
+                g.lower() == board.form_requests_group for g in found_groups
+            ):
+                group_warnings.append({
+                    "boardId": board_id,
+                    "boardName": board.name,
+                    "configured": board_config.get("form_requests_group", "Form Requests"),
+                    "foundGroups": sorted(found_groups),
+                })
+
             for item in items:
-                existing_link = monday_client.get_column_value(item, link_col)
-                status_val = monday_client.get_column_value(item, status_col).lower()
+                task = Task(item, board, subdomain)
 
-                if existing_link:
-                    # Task already has a folder — if it's Approved (and not completed), surface it
-                    # so the user knows we skipped creating a new one for it.
-                    if status_val == approved_label and status_val not in completed:
-                        raw_name = item.get("name", "Untitled Task")
-                        if " | " in raw_name:
-                            raw_name = raw_name.rsplit(" | ", 1)[1]
-                        monday_url = f"https://{subdomain}.monday.com/boards/{board_id}/pulses/{item['id']}"
+                if task.has_folder:
+                    # Already has a folder — surface if Approved (not completed)
+                    if task.is_approved and not task.is_completed:
                         approved_with_folder.append({
-                            "id": item["id"],
-                            "boardId": board_id,
-                            "boardName": board_config["name"],
-                            "taskName": raw_name.strip(),
-                            "mondayUrl": monday_url,
-                            "dropboxLink": existing_link,
+                            "id": task.id,
+                            "boardId": task.board_id,
+                            "boardName": task.board_name,
+                            "taskName": task.task_name,
+                            "mondayUrl": task.monday_url,
+                            "dropboxLink": task.dropbox_link,
                         })
-                    continue  # Either way, skip normal ready/ambiguous flow
-
-                # Skip if the task is marked as completed
-                if status_val in completed:
                     continue
 
-                monday_url = f"https://{subdomain}.monday.com/boards/{board_id}/pulses/{item['id']}"
-                dept = monday_client.get_column_value(item, columns.get("department", "")) or db.fallback.get("department", "")
-                product = monday_client.get_column_value(item, columns.get("product", "")) or ""
-                platform = monday_client.get_column_value(item, columns.get("platform", "")) or ""
+                if task.is_completed:
+                    continue
 
-                # Task name = rightmost segment after the last " | " in the full name
-                raw_name = item.get("name", "Untitled Task")
-                if " | " in raw_name:
-                    raw_name = raw_name.rsplit(" | ", 1)[1]
-                task_name = raw_name.strip()
-
-                if db.is_ambiguous(dept):
-                    # Compute extra column values used by PathBuilder to pre-fill each segment
-                    category = db.get_category(product) if product else ""
-                    date_folder = dashboard._get_date_folder(datetime.utcnow())
-                    media_type = board_config.get("media_type", "")
+                if board.is_ambiguous(task.department):
+                    category = board.get_category(task.product) if task.product else ""
+                    from dashboard import _get_date_folder
+                    date_folder = _get_date_folder(datetime.utcnow())
 
                     ambiguous.append({
-                        "id": item["id"],
-                        "boardId": board_id,
-                        "boardName": board_config["name"],
-                        "taskName": task_name,
-                        "mondayUrl": monday_url,
-                        "department": dept,
-                        "status": status_val,
-                        "isApproved": status_val == approved_label,
-                        "createdAt": item.get("created_at", ""),
+                        "id": task.id,
+                        "boardId": task.board_id,
+                        "boardName": task.board_name,
+                        "taskName": task.task_name,
+                        "mondayUrl": task.monday_url,
+                        "department": task.department,
+                        "status": task.status,
+                        "isApproved": task.is_approved,
+                        "isNew": task.is_new,
+                        "createdAt": task.created_at,
                         "columnValues": {
-                            "product": product,
-                            "platform": platform,
+                            "product": task.product,
+                            "platform": task.platform,
                             "category": category,
-                            "media_type": media_type,
+                            "media_type": board.media_type,
                             "date": date_folder,
                         },
                     })
                 else:
-                    # Build the preview path for ready tasks
                     preview = ""
                     try:
-                        preview = db.build_path(item, config["dropbox_root"])
+                        preview = board.build_path(task.raw_item(), config["dropbox_root"])
                     except Exception:
                         pass
 
                     ready.append({
-                        "id": item["id"],
-                        "boardId": board_id,
-                        "boardName": board_config["name"],
-                        "taskName": task_name,
-                        "mondayUrl": monday_url,
+                        "id": task.id,
+                        "boardId": task.board_id,
+                        "boardName": task.board_name,
+                        "taskName": task.task_name,
+                        "mondayUrl": task.monday_url,
                         "previewPath": preview,
-                        "status": status_val,
-                        "isApproved": status_val == approved_label,
-                        "createdAt": item.get("created_at", ""),
+                        "status": task.status,
+                        "isApproved": task.is_approved,
+                        "isNew": task.is_new,
+                        "createdAt": task.created_at,
                     })
 
         except Exception as e:
-            print(f"Error fetching {board_config['name']}: {e}", file=sys.stderr)
+            print(f"Error fetching {board.name}: {e}", file=sys.stderr)
 
-    print(json.dumps({"ready": ready, "ambiguous": ambiguous, "approvedWithFolder": approved_with_folder}))
+    print(json.dumps({
+        "ready": ready,
+        "ambiguous": ambiguous,
+        "approvedWithFolder": approved_with_folder,
+        "groupWarnings": group_warnings,
+    }))
 
 
-def create_folder_at_path(board_id: str, item_id: str, custom_path: str) -> None:
+def auto_create_ready_task(board_id: str, item_id: str) -> None:
     """
-    Create a Dropbox folder at a manually-chosen path for an ambiguous task,
-    then write the shared link back to the Monday.com item.
-    Prints JSON: { "success": bool, "link": str } or { "success": false, "error": str }
-
-    board_id    — Monday.com board ID
-    item_id     — Monday.com item ID
-    custom_path — Full Dropbox path chosen by the user (e.g. /Creative 2026/New Dept/Ad V1)
+    Auto-create a Dropbox folder for a ready task (department rule matched)
+    by calling the same process_item() used everywhere else in the app.
+    Prints JSON: { "success": bool, "path": str } or { "success": false, "error": str }
     """
     config = state.load_config()
     board_config = config["boards"].get(board_id)
@@ -150,10 +146,33 @@ def create_folder_at_path(board_id: str, item_id: str, custom_path: str) -> None
         return
 
     try:
+        board = Board(board_id, board_config)
+        item = monday_client.get_item_by_id(item_id)
+        path = board.build_path(item, config["dropbox_root"])
+        core.process_item(item, board_id, board_config, config)
+        print(json.dumps({"success": True, "path": path}))
+    except Exception as e:
+        print(json.dumps({"success": False, "error": str(e)}))
+
+
+def create_folder_at_path(board_id: str, item_id: str, custom_path: str) -> None:
+    """
+    Create a Dropbox folder at a manually-chosen path for an ambiguous task,
+    then write the shared link back to the Monday.com item.
+    Prints JSON: { "success": bool, "link": str } or { "success": false, "error": str }
+    """
+    config = state.load_config()
+    board_config = config["boards"].get(board_id)
+
+    if not board_config:
+        print(json.dumps({"success": False, "error": f"Board {board_id} not found in config"}))
+        return
+
+    try:
+        board = Board(board_id, board_config)
         dropbox_client.create_folder(custom_path)
         link_url = dropbox_client.get_shared_link(custom_path)
-        link_col = board_config["dropbox_link_column"]
-        monday_client.update_dropbox_link(item_id, board_id, link_col, link_url)
+        monday_client.update_dropbox_link(item_id, board_id, board.dropbox_link_column, link_url)
         print(json.dumps({"success": True, "link": link_url}))
     except Exception as e:
         print(json.dumps({"success": False, "error": str(e)}))
