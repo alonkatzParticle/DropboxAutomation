@@ -157,7 +157,7 @@ export default function DebuggerPage() {
                               .filter(([k]) => k !== "error")
                               .map(([k, v]) => `${k}=${v}`)
                               .join(" ")}
-                            {entry.context.error && (
+                            {Boolean(entry.context.error) && (
                               <span className="text-red-500 ml-1">— {String(entry.context.error)}</span>
                             )}
                           </span>
