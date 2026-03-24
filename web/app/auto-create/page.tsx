@@ -3,26 +3,22 @@
 /**
  * auto-create/page.tsx — Auto-Creator page
  *
- * Fetches all Monday.com tasks missing a Dropbox folder and splits them into:
- *   - New Tasks: detected by the Python poller (queued via new_item_ids in state.json)
+ * Displays Monday.com tasks missing a Dropbox folder, split into:
+ *   - New Tasks: tasks in the Form Requests group with no folder yet
  *   - Needs Attention: department not recognized → user picks path manually
  *   - Ready to Create: department matched → one-click or "Create All" creation
  *
- * A toggle bar at the top enables live detection: when ON, the page polls
- * Monday.com every 30 seconds and surfaces any tasks queued by the Python poller.
+ * Folder auto-creation is handled by the Vercel cron job (/api/cron/poll).
+ * This page is for manual review and one-off folder creation only.
  *
- * Side panel shows existing department hierarchy rules for reference while
- * the user is choosing a location for an ambiguous task.
- *
- * Depends on: /api/auto-create, /api/auto, /api/config,
+ * Depends on: /api/auto-create, /api/config,
  *             AmbiguousTaskCard.tsx, ReadyTasksList.tsx
  */
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Loader2, RefreshCw, AlertTriangle, Zap, CheckCircle2, ChevronDown, ChevronRight, Flag, ExternalLink, Bell, Ban } from "lucide-react";
+import { Loader2, RefreshCw, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Flag, ExternalLink, Bell, Ban } from "lucide-react";
 import AmbiguousTaskCard, { AmbiguousTask } from "@/components/AmbiguousTaskCard";
 import ReadyTasksList, { ReadyTask } from "@/components/ReadyTasksList";
 
@@ -49,19 +45,11 @@ export default function AutoCreatorPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // Auto-detect toggle state (synced with /api/auto → state.json)
-  const [autoEnabled, setAutoEnabled] = useState(false);
-  const [togglingAuto, setTogglingAuto] = useState(false);
-
   // IDs dismissed by the user — hides them from the "New Tasks" section
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
 
   // IDs of tasks currently being skipped (shows spinner on their skip button)
   const [skippingIds, setSkippingIds] = useState<Set<string>>(new Set());
-
-  // "Last checked X seconds ago" counter — resets to 0 after each load
-  const [secsSinceCheck, setSecsSinceCheck] = useState(0);
-  const secsSinceCheckRef = useRef(0);
 
   // History of the last 50 auto-created folders
   const [history, setHistory] = useState<{ taskName: string; boardName: string; previewPath: string; createdAt: string }[]>([]);
@@ -139,92 +127,8 @@ export default function AutoCreatorPage() {
       setError("Failed to load tasks. Check that the server is running.");
     }
 
-    secsSinceCheckRef.current = 0;
-    setSecsSinceCheck(0);
     setLoading(false);
   }, []);
-
-  /**
-   * Silent background poll — no loading spinner, no page disruption.
-   * Fetches all tasks, then auto-creates Dropbox folders for any ready tasks
-   * that are in the Form Requests group (isNew) and not yet dismissed.
-   * Ambiguous tasks are skipped and stay in Needs Attention.
-   * Called automatically every 30 seconds when auto-detect is ON.
-   */
-  const silentPoll = useCallback(async () => {
-    try {
-      const res = await fetch("/api/auto-create");
-      const tasks = await res.json();
-
-      const readyTasks: ReadyTask[] = tasks.ready ?? [];
-
-      // Auto-create folders for ready Form Request tasks
-      const toCreate = readyTasks.filter(t => t.isNew);
-      if (toCreate.length > 0) {
-        const results = await Promise.all(
-          toCreate.map(t =>
-            fetch("/api/auto-create", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ boardId: t.boardId, itemId: t.id }),
-            })
-              .then(r => r.json())
-              .then(data => ({ task: t, data }))
-              .catch(() => null)
-          )
-        );
-
-        // Log successful creations to history
-        const now = new Date().toISOString();
-        const newEntries = results
-          .filter((r): r is { task: ReadyTask; data: { success: boolean; path: string } } =>
-            r !== null && r.data?.success === true
-          )
-          .map(({ task, data }) => ({
-            taskName: task.taskName,
-            boardName: task.boardName,
-            previewPath: data.path,
-            createdAt: now,
-          }));
-
-        if (newEntries.length > 0) {
-          fetch("/api/history", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(newEntries),
-          })
-            .then(r => r.json())
-            .then(d => setHistory(d.entries ?? []))
-            .catch(() => {});
-        }
-
-        // Refresh task list so newly linked tasks disappear
-        const refreshRes = await fetch("/api/auto-create");
-        const refreshed = await refreshRes.json();
-        setReady(refreshed.ready ?? []);
-        setAmbiguous(refreshed.ambiguous ?? []);
-        setApprovedWithFolder(refreshed.approvedWithFolder ?? []);
-        setGroupWarnings(refreshed.groupWarnings ?? []);
-      } else {
-        setReady(readyTasks);
-        setAmbiguous(tasks.ambiguous ?? []);
-        setApprovedWithFolder(tasks.approvedWithFolder ?? []);
-        setGroupWarnings(tasks.groupWarnings ?? []);
-      }
-    } catch {
-      // Silently ignore — don't disrupt the UI on a background poll failure
-    }
-
-    secsSinceCheckRef.current = 0;
-    setSecsSinceCheck(0);
-  }, []);
-
-  /** Poll silently every 30 seconds when auto-detect is ON */
-  useEffect(() => {
-    if (!autoEnabled) return;
-    const id = setInterval(silentPoll, 30_000);
-    return () => clearInterval(id);
-  }, [autoEnabled, silentPoll]);
 
   /** On mount: restore board selection from localStorage */
   useEffect(() => {
@@ -232,101 +136,20 @@ export default function AutoCreatorPage() {
     if (saved) setSelectedBoardId(saved);
   }, []);
 
-  /** On mount: load tasks, fetch auto_enabled flag, and load history */
+  /** On mount: load tasks and history */
   useEffect(() => {
     load();
-    fetch("/api/auto")
-      .then(r => r.json())
-      .then(d => setAutoEnabled(d.enabled ?? false))
-      .catch(() => {});
     fetch("/api/history")
       .then(r => r.json())
       .then(d => setHistory(d.entries ?? []))
       .catch(() => {});
   }, [load]);
 
-  /** Tick the "last checked" counter every second */
-  useEffect(() => {
-    const id = setInterval(() => {
-      secsSinceCheckRef.current += 1;
-      setSecsSinceCheck(secsSinceCheckRef.current);
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
-
-
-  /**
-   * Toggle auto-detect on/off and persist the setting via /api/auto.
-   */
-  async function handleToggleAuto(value: boolean) {
-    setTogglingAuto(true);
-    try {
-      await fetch("/api/auto", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: value }),
-      });
-      setAutoEnabled(value);
-    } catch {
-      // Revert on failure
-    }
-    setTogglingAuto(false);
-  }
-
-  /** Human-readable "last checked" label */
-  function lastCheckedLabel() {
-    if (secsSinceCheck < 5) return "just now";
-    if (secsSinceCheck < 60) return `${secsSinceCheck}s ago`;
-    return `${Math.floor(secsSinceCheck / 60)}m ago`;
-  }
-
   return (
     <div className="flex h-full min-h-screen">
 
       {/* ── Main panel ── */}
       <div className="flex-1 p-6 space-y-6 overflow-y-auto">
-
-        {/* Auto-detect toggle bar */}
-        <div className="flex items-center gap-4 p-3 rounded-lg border bg-muted/30 flex-wrap">
-          <div className="flex items-center gap-2">
-            <Zap className="h-4 w-4 text-amber-500" />
-            <span className="text-sm font-medium">Auto-detect</span>
-            {/* Toggle switch — persists via /api/auto → state.json */}
-            <Switch
-              checked={autoEnabled}
-              onCheckedChange={handleToggleAuto}
-              disabled={togglingAuto}
-            />
-            <span className={`text-xs font-medium ${autoEnabled ? "text-green-600" : "text-muted-foreground"}`}>
-              {autoEnabled ? "ON" : "OFF"}
-            </span>
-          </div>
-
-          {/* "Last checked" counter — only shown when auto is ON */}
-          {autoEnabled && (
-            <span className="text-xs text-muted-foreground">
-              Last checked: {lastCheckedLabel()}
-            </span>
-          )}
-
-          {/* New tasks detected badge */}
-          {(() => {
-            const newCount = [...ready, ...ambiguous].filter(t => t.isNew && !dismissedIds.has(t.id) && (!selectedBoardId || t.boardId === selectedBoardId)).length;
-            return newCount > 0 ? (
-              <Badge className="bg-blue-100 text-blue-700 border-blue-300 gap-1" variant="outline">
-                <Bell className="h-3 w-3" />
-                {newCount} new task{newCount > 1 ? "s" : ""} in Form Requests
-              </Badge>
-            ) : null;
-          })()}
-
-          {/* Helper text when auto is OFF */}
-          {!autoEnabled && (
-            <span className="text-xs text-muted-foreground">
-              Turn on to automatically detect new Monday.com tasks via webhook.
-            </span>
-          )}
-        </div>
 
         {/* Group name mismatch warnings */}
         {groupWarnings.filter(w => !selectedBoardId || w.boardId === selectedBoardId).map(w => (
