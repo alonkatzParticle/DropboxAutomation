@@ -18,6 +18,7 @@ import { createFolder, getSharedLink } from "./dropbox-client";
 import { Board, BoardConfig } from "./board";
 import { Task } from "./task";
 import { loadConfig, loadState, saveState } from "./storage";
+import { log } from "./logger";
 
 /**
  * Run the full automation for one Monday.com item:
@@ -46,6 +47,7 @@ export async function processItem(
   await createFolder(folderPath);
   const link = await getSharedLink(folderPath);
   await updateDropboxLink(task.id, boardId, board.dropboxLinkColumn, link);
+  await log("info", "processItem", `Created folder for '${task.taskName}'`, { boardId, itemId: task.id, path: folderPath });
   return { path: folderPath, link };
 }
 
@@ -91,10 +93,12 @@ export async function runPolling(config: Record<string, unknown>): Promise<strin
           lines.push(`  ✓ Created folder for '${task.taskName}'.`);
         } catch (e) {
           lines.push(`  ✗ Failed for '${task.taskName}': ${e}`);
+          await log("error", "runPolling", `Failed to create folder for '${task.taskName}'`, { boardId, itemId: task.id, error: String(e) });
         }
       }
     } catch (e) {
       lines.push(`  ✗ Could not fetch items from ${board.name}: ${e}`);
+      await log("error", "runPolling", `Could not fetch items from board '${board.name}'`, { boardId, error: String(e) });
     }
   }
 
@@ -119,7 +123,7 @@ export async function runAll(config: Record<string, unknown>): Promise<string> {
       for (const item of items) {
         const task = new Task(item, board, subdomain);
         try { await processItem(item, boardId, boardConfig, config); lines.push(`  ✓ ${task.taskName}`); }
-        catch (e) { lines.push(`  ✗ ${task.taskName}: ${e}`); }
+        catch (e) { lines.push(`  ✗ ${task.taskName}: ${e}`); await log("error", "runAll", `Failed: ${task.taskName}`, { boardId, itemId: task.id, error: String(e) }); }
       }
     } catch (e) { lines.push(`  ✗ Could not fetch from ${board.name}: ${e}`); }
   }
@@ -154,7 +158,7 @@ export async function runSelected(
       if (!fetched.length) { lines.push(`✗ Item ${itemId} not found`); continue; }
       const { path, link } = await processItem(fetched[0], boardId, boardConfig, config, force);
       lines.push(`✓ ${fetched[0].name}: ${path}\nLink: ${link}`);
-    } catch (e) { lines.push(`✗ ${itemId}: ${e}`); }
+    } catch (e) { lines.push(`✗ ${itemId}: ${e}`); await log("error", "runSelected", `Failed for item ${itemId}`, { boardId, itemId, error: String(e) }); }
   }
   lines.push("\nDone.");
   return lines.join("\n");

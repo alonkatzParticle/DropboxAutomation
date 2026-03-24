@@ -40,6 +40,8 @@ web/yarn-error.log*
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
 logs/
+# The api/logs/ route is source code, not a log directory
+!web/app/api/logs/
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
