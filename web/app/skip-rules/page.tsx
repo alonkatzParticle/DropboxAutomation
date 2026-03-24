@@ -56,11 +56,8 @@ export default function SkipRulesPage() {
     setLoading(true);
     setError("");
     try {
-      // Fetch config + Monday column titles in parallel
-      const [configRes, columnsRes] = await Promise.all([
-        fetch("/api/config"),
-        fetch(`/api/monday-columns?boardIds=${""}`), // placeholder; we'll fetch per-board
-      ]);
+      // Fetch config first, then fetch Monday columns using the real board IDs
+      const configRes = await fetch("/api/config");
       const config = await configRes.json();
       if (config.error) throw new Error(config.error);
 
