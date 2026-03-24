@@ -91,6 +91,12 @@ export async function loadConfig(): Promise<Record<string, unknown>> {
     if (config) await storageSet("config", config);
   }
 
+  // Last resort: check CONFIG_JSON env var (works even if KV is not connected)
+  if (!config && process.env.CONFIG_JSON) {
+    config = JSON.parse(process.env.CONFIG_JSON);
+    if (config && USE_KV) await storageSet("config", config);
+  }
+
   if (!config) throw new Error("config.json not found. Please add your board configuration.");
   return config;
 }
