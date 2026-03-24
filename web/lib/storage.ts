@@ -73,15 +73,22 @@ export async function storageSet(key: string, value: unknown): Promise<void> {
 export async function loadConfig(): Promise<Record<string, unknown>> {
   let config = await storageGet<Record<string, unknown>>("config");
 
-  // On Vercel, seed KV from the bundled config.json if KV is empty
+  // On Vercel, seed KV from a local file or the CONFIG_JSON env var if KV is empty
   if (!config && USE_KV) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const nodeFs = require("fs") as typeof import("fs");
     const configPath = localFilePath("config");
     if (nodeFs.existsSync(configPath)) {
+      // Local file present (e.g. during build)
       config = JSON.parse(nodeFs.readFileSync(configPath, "utf-8"));
-      await storageSet("config", config);
+    } else if (process.env.CONFIG_JSON) {
+      // Vercel first deploy: seed from the CONFIG_JSON environment variable.
+      // Paste the full contents of your config.json as this env var in Vercel's
+      // project settings. After the first request it will be stored in KV and
+      // this branch will no longer run.
+      config = JSON.parse(process.env.CONFIG_JSON);
     }
+    if (config) await storageSet("config", config);
   }
 
   if (!config) throw new Error("config.json not found. Please add your board configuration.");
