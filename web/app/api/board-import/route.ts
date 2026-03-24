@@ -15,20 +15,10 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-
-const ENV_PATH = path.resolve(process.cwd(), "..", ".env");
-const CONFIG_PATH = path.resolve(process.cwd(), "..", "config.json");
+import { loadConfig } from "@/lib/storage";
 
 function readMondayToken(): string | null {
-  try {
-    const content = fs.readFileSync(ENV_PATH, "utf-8");
-    const match = content.match(/^MONDAY_API_TOKEN\s*=\s*(.+)$/m);
-    return match ? match[1].trim() : null;
-  } catch {
-    return null;
-  }
+  return process.env.MONDAY_API_TOKEN ?? null;
 }
 
 /** Extract a numeric board ID from a Monday.com board URL. */
@@ -57,7 +47,7 @@ export async function GET(req: NextRequest) {
   const token = readMondayToken();
   if (!token) {
     return NextResponse.json(
-      { error: "MONDAY_API_TOKEN not found in .env" },
+      { error: "MONDAY_API_TOKEN not found in environment variables" },
       { status: 500 }
     );
   }
@@ -113,8 +103,8 @@ export async function GET(req: NextRequest) {
     // Load existing config for this board if it exists
     let existingConfig: Record<string, unknown> | null = null;
     try {
-      const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
-      existingConfig = cfg?.boards?.[boardId] ?? null;
+      const cfg = await loadConfig();
+      existingConfig = ((cfg?.boards as Record<string, Record<string, unknown>>)?.[boardId]) ?? null;
     } catch {
       // Config unreadable — treat as new board
     }

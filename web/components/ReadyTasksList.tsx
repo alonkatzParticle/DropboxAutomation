@@ -13,7 +13,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Play, CheckCircle2, ExternalLink, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2, Play, CheckCircle2, ExternalLink, ChevronDown, ChevronRight, Ban } from "lucide-react";
 
 // Shape of one ready task returned by GET /api/auto-create
 export interface ReadyTask {
@@ -35,10 +35,12 @@ interface Props {
   highlightedIds?: Set<string>;  // IDs of tasks just detected via webhook — shown with "New" badge
   collapsed?: boolean;  // Whether the task list is hidden
   onToggleCollapse?: () => void;  // Called when the section header is clicked
+  onSkipped?: () => void;  // Called after a task is manually skipped
 }
 
-export default function ReadyTasksList({ tasks, onCreated, highlightedIds, collapsed, onToggleCollapse }: Props) {
+export default function ReadyTasksList({ tasks, onCreated, highlightedIds, collapsed, onToggleCollapse, onSkipped }: Props) {
   const [running, setRunning] = useState(false);
+  const [skipping, setSkipping] = useState<Set<string>>(new Set());
   const [msg, setMsg] = useState("");
 
   /**
@@ -61,6 +63,21 @@ export default function ReadyTasksList({ tasks, onCreated, highlightedIds, colla
       setMsg("Network error.");
     }
     setRunning(false);
+  }
+
+  // Manually skip a single task — sends it to Skipped Tasks page
+  async function skipTask(task: ReadyTask) {
+    setSkipping((prev) => new Set(prev).add(task.id));
+    try {
+      await fetch("/api/skipped-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "skip", itemId: task.id, reason: "Manually skipped" }),
+      });
+      onSkipped?.();
+    } finally {
+      setSkipping((prev) => { const s = new Set(prev); s.delete(task.id); return s; });
+    }
   }
 
   return (
@@ -108,15 +125,28 @@ export default function ReadyTasksList({ tasks, onCreated, highlightedIds, colla
                 {/* Proposed Dropbox path */}
                 <p className="text-xs text-muted-foreground font-mono break-words leading-relaxed">{task.previewPath}</p>
               </div>
-              {/* Create button for just this task */}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={running}
-                onClick={() => runItems([{ boardId: task.boardId, itemId: task.id }])}
-              >
-                Create
-              </Button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {/* Skip button — moves task to Skipped Tasks page */}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground h-8 px-2"
+                  disabled={skipping.has(task.id)}
+                  onClick={() => skipTask(task)}
+                  title="Skip this task (no Dropbox folder needed)"
+                >
+                  {skipping.has(task.id) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+                </Button>
+                {/* Create button for just this task */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={running}
+                  onClick={() => runItems([{ boardId: task.boardId, itemId: task.id }])}
+                >
+                  Create
+                </Button>
+              </div>
             </div>
           ))}
         </div>

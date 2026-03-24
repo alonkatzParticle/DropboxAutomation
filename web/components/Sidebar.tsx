@@ -11,12 +11,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FolderSync, LayoutDashboard, FolderTree, Columns2, Terminal, FolderInput, Zap, PlusCircle } from "lucide-react";
+import { FolderSync, LayoutDashboard, FolderTree, Columns2, Terminal, FolderInput, Zap, PlusCircle, Ban, ShieldOff } from "lucide-react";
 
 // Each nav item: where it goes, what label to show, and which icon to use
 const NAV_ITEMS = [
   { href: "/", label: "Home", icon: LayoutDashboard },
   { href: "/auto-create", label: "Auto-Creator", icon: Zap },
+  { href: "/skipped-tasks", label: "Skipped Tasks", icon: Ban },
+  { href: "/skip-rules", label: "Skip Rules", icon: ShieldOff },
   { href: "/folder-mover", label: "Folder Mover", icon: FolderInput },
   { href: "/hierarchy", label: "Folder Hierarchy", icon: FolderTree },
   { href: "/board-columns", label: "Board Columns", icon: Columns2 },

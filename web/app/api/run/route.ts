@@ -1,58 +1,50 @@
 /**
- * api/run/route.ts — API route for triggering Python automation scripts
+ * app/api/run/route.ts — Trigger automation runs from the web UI
  *
  * POST /api/run
- * Body: { mode: "poll" | "all" | "manual" | "selected", url?: string, force?: boolean,
- *         items?: { boardId: string, itemId: string }[] }
+ * Body: { mode: "poll" | "all" | "manual" | "selected", url?, force?, items? }
  *
- * Shells out to the Python scripts in the parent directory and streams stdout/stderr
- * back as a JSON response. This lets the UI trigger runs without duplicating logic.
+ * Runs the requested automation mode and returns the log output as JSON.
+ * All logic lives in lib/core.ts — this route is just the HTTP entry point.
+ *
+ * Depends on: lib/core.ts, lib/storage.ts
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { exec } from "child_process";
-import path from "path";
-
-// The Python project root is one level above this Next.js app
-const PROJECT_ROOT = path.resolve(process.cwd(), "..");
-
-function runPython(args: string[]): Promise<{ output: string; success: boolean }> {
-  return new Promise((resolve) => {
-    const cmd = ["python3", "main.py", ...args].join(" ");
-    exec(cmd, { cwd: PROJECT_ROOT, timeout: 5 * 60 * 1000 }, (error, stdout, stderr) => {
-      const output = [stdout, stderr].filter(Boolean).join("\n").trim();
-      resolve({ output, success: !error });
-    });
-  });
-}
+import { runPolling, runAll, runManual, runSelected } from "@/lib/core";
+import { loadConfig } from "@/lib/storage";
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const { mode, url, force, items } = body as {
-    mode: string;
+    mode?: string;
     url?: string;
     force?: boolean;
-    // items: array of { boardId, itemId } pairs for "selected" mode
     items?: { boardId: string; itemId: string }[];
   };
 
-  let args: string[] = [];
+  try {
+    const config = await loadConfig();
+    let output = "";
 
-  if (mode === "manual") {
-    if (!url) return NextResponse.json({ error: "url is required for manual mode" }, { status: 400 });
-    args = ["--url", url, ...(force ? ["--force"] : [])];
-  } else if (mode === "all") {
-    args = ["--all"];
-  } else if (mode === "selected") {
-    if (!items?.length) return NextResponse.json({ error: "items is required for selected mode" }, { status: 400 });
-    // Build comma-separated "boardId:itemId" string for the Python --items flag
-    const itemsArg = items.map((i) => `${i.boardId}:${i.itemId}`).join(",");
-    args = ["--items", itemsArg];
-  } else {
-    // poll (default)
-    args = [];
+    if (mode === "manual") {
+      if (!url) return NextResponse.json({ error: "url is required for manual mode" }, { status: 400 });
+      // Extract boardId and itemId from the Monday.com URL
+      const match = url.match(/\/boards\/(\d+)\/pulses\/(\d+)/);
+      if (!match) return NextResponse.json({ error: "Invalid Monday.com URL format" }, { status: 400 });
+      output = await runManual(match[1], match[2], config, force ?? false);
+    } else if (mode === "all") {
+      output = await runAll(config);
+    } else if (mode === "selected") {
+      if (!items?.length) return NextResponse.json({ error: "items required for selected mode" }, { status: 400 });
+      output = await runSelected(items, config);
+    } else {
+      // Default: poll mode
+      output = await runPolling(config);
+    }
+
+    return NextResponse.json({ output, success: true });
+  } catch (e) {
+    return NextResponse.json({ output: String(e), success: false }, { status: 500 });
   }
-
-  const { output, success } = await runPython(args);
-  return NextResponse.json({ output, success }, { status: success ? 200 : 500 });
 }

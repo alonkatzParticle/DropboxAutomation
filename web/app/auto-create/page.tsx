@@ -465,6 +465,7 @@ export default function AutoCreatorPage() {
               <ReadyTasksList
                 tasks={ready.filter(t => t.boardId === selectedBoardId)}
                 onCreated={load}
+                onSkipped={load}
                 highlightedIds={new Set(ready.filter(t => t.isNew && !dismissedIds.has(t.id)).map(t => t.id))}
                 collapsed={collapsedSections["ready"] ?? false}
                 onToggleCollapse={() => toggleSection("ready")}

@@ -1,46 +1,29 @@
 /**
- * api/status/route.ts — Returns current state from state.json and config.json
+ * app/api/status/route.ts — Returns current app state
  *
  * GET /api/status
- * Returns board names, last-checked timestamps, and cron log tail.
+ * Returns board names, last-checked timestamps per board, and auto-enabled flag.
+ *
+ * Depends on: lib/storage.ts
  */
 
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-
-const PROJECT_ROOT = path.resolve(process.cwd(), "..");
-
-function readJson(filename: string) {
-  const p = path.join(PROJECT_ROOT, filename);
-  if (!fs.existsSync(p)) return null;
-  return JSON.parse(fs.readFileSync(p, "utf-8"));
-}
-
-function readLogTail(filename: string, lines = 100): string {
-  const p = path.join(PROJECT_ROOT, filename);
-  if (!fs.existsSync(p)) return "";
-  const content = fs.readFileSync(p, "utf-8");
-  return content.split("\n").slice(-lines).join("\n").trim();
-}
+import { loadConfig, loadState } from "@/lib/storage";
+import { BoardConfig } from "@/lib/board";
 
 export async function GET() {
-  const config = readJson("config.json");
-  const state = readJson("state.json") ?? {};
-  const log = readLogTail("cron.log");
+  try {
+    const [config, state] = await Promise.all([loadConfig(), loadState()]);
+    const boards = config.boards as Record<string, BoardConfig>;
 
-  if (!config) {
-    return NextResponse.json({ error: "config.json not found" }, { status: 500 });
-  }
-
-  // Shape the board data for the UI
-  const boards = Object.entries(config.boards as Record<string, { name: string }>).map(
-    ([id, board]) => ({
+    const boardList = Object.entries(boards).map(([id, board]) => ({
       id,
       name: board.name,
-      lastChecked: state[id] ?? null,
-    })
-  );
+      lastChecked: (state[id] as string) ?? null,
+    }));
 
-  return NextResponse.json({ boards, log });
+    return NextResponse.json({ boards: boardList, log: "" });
+  } catch (e) {
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
 }
