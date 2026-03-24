@@ -10,20 +10,15 @@
 
 import { runQuery } from "./monday-api";
 
-// All column IDs we may need across all boards
-const COLUMN_IDS = [
-  "label", "label9", "single_selectu06tevn", "status_1__1",
-  "single_selectrz7zhou", "single_selectrz7230p", "link4__1", "link0__1", "status",
-  "label4",
-];
-
-// The GraphQL fragment reused by all item-fetching queries
+// The GraphQL fragment reused by all item-fetching queries.
+// We fetch ALL column values (no ids filter) so any column added through
+// the Board Columns UI is automatically included — no hardcoded list needed.
 const ITEM_FIELDS = `
   id
   name
   created_at
   group { title }
-  column_values(ids: $columnIds) { id text value }
+  column_values { id text value }
 `;
 
 /**
@@ -33,12 +28,12 @@ const ITEM_FIELDS = `
  */
 export async function getNewItems(boardId: string, sinceIso: string): Promise<MondayItem[]> {
   const data = await runQuery(
-    `query ($boardId: ID!, $columnIds: [String!]) {
+    `query ($boardId: ID!) {
       boards(ids: [$boardId]) {
         items_page(limit: 100) { items { ${ITEM_FIELDS} } }
       }
     }`,
-    { boardId, columnIds: COLUMN_IDS }
+    { boardId }
   );
   const items = (data as any).boards[0].items_page.items as MondayItem[];
   return items.filter((item) => item.created_at > sinceIso);
@@ -50,10 +45,10 @@ export async function getNewItems(boardId: string, sinceIso: string): Promise<Mo
  */
 export async function getItemById(itemId: string): Promise<MondayItem> {
   const data = await runQuery(
-    `query ($itemId: ID!, $columnIds: [String!]) {
+    `query ($itemId: ID!) {
       items(ids: [$itemId]) { ${ITEM_FIELDS} }
     }`,
-    { itemId, columnIds: COLUMN_IDS }
+    { itemId }
   );
   const items = (data as any).items as MondayItem[];
   if (!items?.length) throw new Error(`No item found with ID ${itemId}`);
@@ -65,10 +60,10 @@ export async function getItemById(itemId: string): Promise<MondayItem> {
  */
 export async function getItemsByIds(itemIds: string[]): Promise<MondayItem[]> {
   const data = await runQuery(
-    `query ($itemIds: [ID!], $columnIds: [String!]) {
+    `query ($itemIds: [ID!]) {
       items(ids: $itemIds) { ${ITEM_FIELDS} }
     }`,
-    { itemIds, columnIds: COLUMN_IDS }
+    { itemIds }
   );
   return ((data as any).items ?? []) as MondayItem[];
 }

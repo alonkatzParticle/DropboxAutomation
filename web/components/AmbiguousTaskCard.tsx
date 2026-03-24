@@ -14,7 +14,7 @@ import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ExternalLink, FolderOpen, AlertTriangle, Loader2 } from "lucide-react";
+import { ExternalLink, FolderOpen, AlertTriangle, Loader2, Ban } from "lucide-react";
 import PathBuilder from "@/components/PathBuilder";
 
 // Shape of one ambiguous task returned by GET /api/auto-create
@@ -50,11 +50,13 @@ interface Props {
   deptRules: Record<string, DeptRule>;
   onCreated: () => void;  // Called after successful creation so parent can refresh
   highlighted?: boolean;  // True when this task was just detected via webhook
+  onSkipped?: () => void; // Called after this task is manually skipped
 }
 
-export default function AmbiguousTaskCard({ task, dropboxRoot, deptRules, onCreated, highlighted }: Props) {
+export default function AmbiguousTaskCard({ task, dropboxRoot, deptRules, onCreated, highlighted, onSkipped }: Props) {
   const [showBuilder, setShowBuilder] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [skipping, setSkipping] = useState(false);
   const [error, setError] = useState("");
 
   /**
@@ -84,11 +86,26 @@ export default function AmbiguousTaskCard({ task, dropboxRoot, deptRules, onCrea
     setCreating(false);
   }
 
+  /** Send this task to Skipped Tasks (no Dropbox folder needed). */
+  async function handleSkip() {
+    setSkipping(true);
+    try {
+      await fetch("/api/skipped-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "skip", itemId: task.id, reason: "Manually skipped" }),
+      });
+      onSkipped?.();
+    } finally {
+      setSkipping(false);
+    }
+  }
+
   return (
     <Card className={`border-amber-200 bg-amber-50/40 ${highlighted ? "ring-2 ring-green-400" : ""}`}>
       <CardContent className="p-4 space-y-3">
 
-        {/* Task name + board name + Monday.com link */}
+        {/* Task name + board name + Monday.com link + skip button */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="font-medium text-sm">{task.taskName}</p>
@@ -98,11 +115,26 @@ export default function AmbiguousTaskCard({ task, dropboxRoot, deptRules, onCrea
             )}
             <p className="text-xs text-muted-foreground">{task.boardName}</p>
           </div>
-          <a href={task.mondayUrl} target="_blank" rel="noreferrer">
-            <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Button>
-          </a>
+          <div className="flex items-center gap-1 shrink-0">
+            <a href={task.mondayUrl} target="_blank" rel="noreferrer">
+              <Button variant="ghost" size="icon" className="h-7 w-7">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Button>
+            </a>
+            {/* Skip button — moves task to Skipped Tasks page */}
+            {onSkipped && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                disabled={skipping}
+                onClick={handleSkip}
+                title="Skip this task (no Dropbox folder needed)"
+              >
+                {skipping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Column value chips — shows context so the user knows what to expect */}

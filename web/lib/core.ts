@@ -142,7 +142,7 @@ export async function runManual(
 
 /** Selected mode: process specific items given as { boardId, itemId } pairs. */
 export async function runSelected(
-  items: { boardId: string; itemId: string }[], config: Record<string, unknown>
+  items: { boardId: string; itemId: string }[], config: Record<string, unknown>, force = false
 ): Promise<string> {
   const lines: string[] = [];
   const boards = config.boards as Record<string, BoardConfig>;
@@ -152,8 +152,8 @@ export async function runSelected(
     try {
       const fetched = await getItemsByIds([itemId]);
       if (!fetched.length) { lines.push(`✗ Item ${itemId} not found`); continue; }
-      const { path } = await processItem(fetched[0], boardId, boardConfig, config);
-      lines.push(`✓ ${fetched[0].name}: ${path}`);
+      const { path, link } = await processItem(fetched[0], boardId, boardConfig, config, force);
+      lines.push(`✓ ${fetched[0].name}: ${path}\nLink: ${link}`);
     } catch (e) { lines.push(`✗ ${itemId}: ${e}`); }
   }
   lines.push("\nDone.");

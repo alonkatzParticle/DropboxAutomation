@@ -99,6 +99,7 @@ export async function moveTaskFolder(boardId: string, itemId: string, newPath: s
 
 /**
  * Verify a task and return a preview of the folder path that would be created.
+ * Also checks whether the task already has a Dropbox folder linked.
  * No side effects — used by the verify-link API route.
  */
 export async function verifyLink(boardId: string, itemId: string) {
@@ -110,7 +111,17 @@ export async function verifyLink(boardId: string, itemId: string) {
     const board = new Board(boardId, boardConfig);
     const item = await getItemById(itemId);
     const previewPath = board.buildPath(item, config.dropbox_root as string);
-    return { success: true, taskName: item.name, previewPath, boardId, itemId };
+    // Check if this task already has a Dropbox link
+    const existingLink = getLinkUrl(item, board.dropboxLinkColumn);
+    return {
+      success: true,
+      taskName: item.name,
+      previewPath,
+      boardId,
+      itemId,
+      hasExistingFolder: Boolean(existingLink),
+      existingLink: existingLink || undefined,
+    };
   } catch (e) {
     return { success: false, error: String(e) };
   }

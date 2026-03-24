@@ -7,38 +7,21 @@
  * On Vercel, this is skipped — polling is handled by the Vercel Cron Job
  * at /api/cron/poll (configured in vercel.json), which runs every hour.
  *
- * Polling interval is controlled by POLL_INTERVAL_MINUTES env var (default 60).
+ * All Node.js-specific logic lives in instrumentation.node.ts so that
+ * Turbopack's Edge bundler never traces fs/path/process.cwd into the
+ * Edge instrumentation bundle.
  *
- * Depends on: lib/core.ts, lib/storage.ts
+ * Depends on: instrumentation.node.ts (Node.js runtime only)
  */
 
 export async function register() {
-  // Only run in the Node.js server runtime, not the Edge runtime
+  // Only run in the Node.js server runtime, not the Edge runtime.
+  // The dynamic import below is only traced by the Node.js bundler.
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
   // On Vercel, polling is handled by the cron job at /api/cron/poll — skip here
   if (process.env.VERCEL) return;
 
-  const { runPolling } = await import("./lib/core");
-  const { loadConfig } = await import("./lib/storage");
-
-  const intervalMinutes = parseInt(process.env.POLL_INTERVAL_MINUTES ?? "60", 10);
-  const intervalMs = intervalMinutes * 60 * 1000;
-
-  async function runPoll() {
-    console.log(`[Poller] Running scheduled poll...`);
-    try {
-      const config = await loadConfig();
-      const output = await runPolling(config);
-      console.log("[Poller]", output);
-    } catch (e) {
-      console.error("[Poller] Error:", e);
-    }
-  }
-
-  // Run once immediately on server start, then on the configured schedule
-  runPoll();
-  setInterval(runPoll, intervalMs);
-
-  console.log(`[Poller] Background polling started — runs every ${intervalMinutes} minute(s).`);
+  const { startPoller } = await import("./instrumentation.node");
+  startPoller();
 }

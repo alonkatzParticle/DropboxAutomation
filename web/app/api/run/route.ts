@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
       output = await runAll(config);
     } else if (mode === "selected") {
       if (!items?.length) return NextResponse.json({ error: "items required for selected mode" }, { status: 400 });
-      output = await runSelected(items, config);
+      output = await runSelected(items, config, force ?? false);
     } else {
       // Default: poll mode
       output = await runPolling(config);

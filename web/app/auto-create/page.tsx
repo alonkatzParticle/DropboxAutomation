@@ -22,7 +22,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Loader2, RefreshCw, AlertTriangle, Zap, CheckCircle2, ChevronDown, ChevronRight, Flag, ExternalLink, Bell } from "lucide-react";
+import { Loader2, RefreshCw, AlertTriangle, Zap, CheckCircle2, ChevronDown, ChevronRight, Flag, ExternalLink, Bell, Ban } from "lucide-react";
 import AmbiguousTaskCard, { AmbiguousTask } from "@/components/AmbiguousTaskCard";
 import ReadyTasksList, { ReadyTask } from "@/components/ReadyTasksList";
 
@@ -56,6 +56,9 @@ export default function AutoCreatorPage() {
   // IDs dismissed by the user — hides them from the "New Tasks" section
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(new Set());
 
+  // IDs of tasks currently being skipped (shows spinner on their skip button)
+  const [skippingIds, setSkippingIds] = useState<Set<string>>(new Set());
+
   // "Last checked X seconds ago" counter — resets to 0 after each load
   const [secsSinceCheck, setSecsSinceCheck] = useState(0);
   const secsSinceCheckRef = useRef(0);
@@ -71,6 +74,21 @@ export default function AutoCreatorPage() {
 
   // Board filter — null means no board selected yet (user must pick)
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
+
+  /** Send a task to Skipped Tasks, then reload the list. */
+  async function skipTask(id: string) {
+    setSkippingIds(prev => new Set(prev).add(id));
+    try {
+      await fetch("/api/skipped-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "skip", itemId: id, reason: "Manually skipped" }),
+      });
+      await load();
+    } finally {
+      setSkippingIds(prev => { const s = new Set(prev); s.delete(id); return s; });
+    }
+  }
 
   /** Toggle a section open/closed by name */
   function toggleSection(name: string) {
@@ -399,6 +417,7 @@ export default function AutoCreatorPage() {
                         dropboxRoot={dropboxRoot}
                         deptRules={boardsInfo[task.boardId]?.department_rules ?? {}}
                         onCreated={load}
+                        onSkipped={load}
                         highlighted
                       />
                     ))}
@@ -415,6 +434,17 @@ export default function AutoCreatorPage() {
                           <p className="text-xs text-muted-foreground font-mono truncate">{task.previewPath}</p>
                           <p className="text-xs text-muted-foreground">{task.boardName}</p>
                         </div>
+                        {/* Skip button */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-muted-foreground h-8 px-2 shrink-0"
+                          disabled={skippingIds.has(task.id)}
+                          onClick={() => skipTask(task.id)}
+                          title="Skip this task (no Dropbox folder needed)"
+                        >
+                          {skippingIds.has(task.id) ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Ban className="h-3.5 w-3.5" />}
+                        </Button>
                       </div>
                     ))}
                   </div>
@@ -450,6 +480,7 @@ export default function AutoCreatorPage() {
                           dropboxRoot={dropboxRoot}
                           deptRules={boardsInfo[task.boardId]?.department_rules ?? {}}
                           onCreated={load}
+                          onSkipped={load}
                           highlighted={task.isNew && !dismissedIds.has(task.id)}
                         />
                       ))}

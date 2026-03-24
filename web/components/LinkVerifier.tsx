@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2, AlertCircle, CheckCircle2, ChevronRight, ExternalLink, Folder } from "lucide-react";
+import { Loader2, AlertCircle, CheckCircle2, ChevronRight, ExternalLink, Folder, RefreshCw } from "lucide-react";
 
 interface VerificationResult {
   success: boolean;
@@ -15,6 +15,8 @@ interface VerificationResult {
   error?: string;
   dropboxLink?: string;
   isConfirmation?: boolean;
+  hasExistingFolder?: boolean;  // True if the task already has a Dropbox link
+  existingLink?: string;        // The existing Dropbox URL if one exists
 }
 
 export default function LinkVerifier() {
@@ -66,8 +68,8 @@ export default function LinkVerifier() {
     return match ? match[1] : null;
   };
 
-  // Create the folder after user confirms
-  const handleCreate = async () => {
+  // Create (or replace) the folder. force=true overwrites an existing Dropbox link.
+  const handleCreate = async (force = false) => {
     if (!verificationResult?.success || !verificationResult?.boardId || !verificationResult?.itemId) {
       return;
     }
@@ -80,6 +82,7 @@ export default function LinkVerifier() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "selected",
+          force,
           items: [{ boardId: verificationResult.boardId, itemId: verificationResult.itemId }],
         }),
       });
@@ -193,12 +196,25 @@ export default function LinkVerifier() {
         {/* Success State - Show Folder Preview or Confirmation */}
         {verificationResult?.success && !verificationResult?.isConfirmation && (
           <div className="space-y-4">
-            <Alert className="bg-green-50 border-green-200">
-              <CheckCircle2 className="h-4 w-4 text-green-600" />
-              <AlertDescription className="text-green-700">
-                Task found and folder path computed successfully
-              </AlertDescription>
-            </Alert>
+
+            {/* Existing folder warning */}
+            {verificationResult.hasExistingFolder ? (
+              <Alert className="bg-amber-50 border-amber-200">
+                <AlertCircle className="h-4 w-4 text-amber-600" />
+                <AlertDescription className="text-amber-700">
+                  This task already has a Dropbox folder linked.{" "}
+                  <a href={verificationResult.existingLink} target="_blank" rel="noreferrer"
+                    className="underline font-medium">Open existing folder</a>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Alert className="bg-green-50 border-green-200">
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                <AlertDescription className="text-green-700">
+                  Task found — no existing folder. Ready to create.
+                </AlertDescription>
+              </Alert>
+            )}
 
             {/* Task Details */}
             <div className="bg-white border border-blue-200 rounded-md p-4 space-y-2">
@@ -209,7 +225,9 @@ export default function LinkVerifier() {
 
               {/* Folder Path Preview */}
               <div>
-                <p className="text-sm text-gray-600 mb-2">Folder Path</p>
+                <p className="text-sm text-gray-600 mb-2">
+                  {verificationResult.hasExistingFolder ? "New folder path (if replaced)" : "Folder Path"}
+                </p>
                 <div className="bg-gray-50 border border-gray-200 rounded p-3 text-sm text-gray-700 w-full">
                   <div className="flex items-center gap-2 flex-wrap">
                     {verificationResult.previewPath
@@ -230,29 +248,34 @@ export default function LinkVerifier() {
 
             {/* Action Buttons */}
             <div className="flex gap-2 pt-2">
-              <Button
-                onClick={handleCreate}
-                disabled={creating}
-                className="bg-green-600 hover:bg-green-700"
-              >
-                {creating ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  <>
-                    Create Folder
-                    <ChevronRight className="w-4 h-4 ml-2" />
-                  </>
-                )}
-              </Button>
-              <Button
-                onClick={handleCancel}
-                variant="outline"
-                disabled={creating}
-                className="border-gray-300"
-              >
+              {/* If no existing folder: Create. If folder exists: Replace (force). */}
+              {verificationResult.hasExistingFolder ? (
+                <Button
+                  onClick={() => handleCreate(true)}
+                  disabled={creating}
+                  variant="outline"
+                  className="border-amber-400 text-amber-700 hover:bg-amber-50"
+                >
+                  {creating ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Replacing…</>
+                  ) : (
+                    <><RefreshCw className="w-4 h-4 mr-2" />Replace folder</>
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => handleCreate(false)}
+                  disabled={creating}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  {creating ? (
+                    <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Creating…</>
+                  ) : (
+                    <>Create Folder<ChevronRight className="w-4 h-4 ml-2" /></>
+                  )}
+                </Button>
+              )}
+              <Button onClick={handleCancel} variant="outline" disabled={creating} className="border-gray-300">
                 Cancel
               </Button>
             </div>

@@ -12,14 +12,22 @@
  * Used by: lib/core.ts, all API routes that read/write app state
  */
 
-import fs from "fs";
-import path from "path";
-
-// The project root is one level above the Next.js web/ folder
-const PROJECT_ROOT = path.resolve(process.cwd(), "..");
-
 // True when running on Vercel (KV env vars are injected automatically)
+// Note: fs/path are NOT imported at the top level — they are lazily required
+// inside local-filesystem functions only, so this file is safe to import in
+// Edge Runtime context (instrumentation.ts) without triggering Node.js warnings.
 const USE_KV = Boolean(process.env.KV_REST_API_URL);
+
+/** Returns the absolute path for a given storage key's JSON file. */
+function localFilePath(key: string): string {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const nodePath = require("path") as typeof import("path");
+  // The project root is one level above the Next.js web/ folder.
+  // process.cwd() here is safe — this function is only ever called in Node.js
+  // context (guarded by USE_KV checks and instrumentation.ts NEXT_RUNTIME guard).
+  const projectRoot = nodePath.resolve(process.cwd(), "..");
+  return nodePath.join(projectRoot, `${key}.json`);
+}
 
 /**
  * Read a stored value by key.
@@ -31,10 +39,12 @@ export async function storageGet<T = unknown>(key: string): Promise<T | null> {
     return kv.get<T>(key);
   }
   // Local: read from <key>.json (e.g. "config" → config.json)
-  const filePath = path.join(PROJECT_ROOT, `${key}.json`);
-  if (!fs.existsSync(filePath)) return null;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const nodeFs = require("fs") as typeof import("fs");
+  const filePath = localFilePath(key);
+  if (!nodeFs.existsSync(filePath)) return null;
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as T;
+    return JSON.parse(nodeFs.readFileSync(filePath, "utf-8")) as T;
   } catch {
     return null;
   }
@@ -50,8 +60,10 @@ export async function storageSet(key: string, value: unknown): Promise<void> {
     return;
   }
   // Local: write to <key>.json
-  const filePath = path.join(PROJECT_ROOT, `${key}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf-8");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const nodeFs = require("fs") as typeof import("fs");
+  const filePath = localFilePath(key);
+  nodeFs.writeFileSync(filePath, JSON.stringify(value, null, 2), "utf-8");
 }
 
 /**
@@ -61,11 +73,13 @@ export async function storageSet(key: string, value: unknown): Promise<void> {
 export async function loadConfig(): Promise<Record<string, unknown>> {
   let config = await storageGet<Record<string, unknown>>("config");
 
-  // On Vercel, seed KV from the bundled file if KV is empty
+  // On Vercel, seed KV from the bundled config.json if KV is empty
   if (!config && USE_KV) {
-    const bundledPath = path.join(PROJECT_ROOT, "config.json");
-    if (fs.existsSync(bundledPath)) {
-      config = JSON.parse(fs.readFileSync(bundledPath, "utf-8"));
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const nodeFs = require("fs") as typeof import("fs");
+    const configPath = localFilePath("config");
+    if (nodeFs.existsSync(configPath)) {
+      config = JSON.parse(nodeFs.readFileSync(configPath, "utf-8"));
       await storageSet("config", config);
     }
   }
