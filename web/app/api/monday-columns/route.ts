@@ -33,11 +33,13 @@ export async function GET(req: NextRequest) {
 
   // Parse board IDs from query string, e.g. ?boardIds=123,456
   const boardIds = req.nextUrl.searchParams.get("boardIds");
-  if (!boardIds) {
-    return NextResponse.json({ error: "boardIds query param required" }, { status: 400 });
-  }
+  // Return empty result instead of error when no board IDs are provided.
+  // This happens when the UI calls before the board list has finished loading.
+  if (!boardIds) return NextResponse.json({});
 
   const ids = boardIds.split(",").map((id) => id.trim()).filter(Boolean);
+  // If all IDs were empty strings after trimming, nothing to fetch
+  if (!ids.length) return NextResponse.json({});
 
   const query = `
     query GetBoardColumns($ids: [ID!]) {
