@@ -22,9 +22,11 @@ const USE_KV = Boolean(process.env.KV_REST_API_URL);
 function localFilePath(key: string): string {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const nodePath = require("path") as typeof import("path");
-  // The project root is one level above the Next.js web/ folder.
-  // process.cwd() here is safe — this function is only ever called in Node.js
-  // context (guarded by USE_KV checks and instrumentation.ts NEXT_RUNTIME guard).
+  // On Vercel, /var/task is read-only — only /tmp is writable.
+  // Locally, store files one level above the web/ folder (the project root).
+  if (process.env.VERCEL) {
+    return nodePath.join("/tmp", `${key}.json`);
+  }
   const projectRoot = nodePath.resolve(process.cwd(), "..");
   return nodePath.join(projectRoot, `${key}.json`);
 }
